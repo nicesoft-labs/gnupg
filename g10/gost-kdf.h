@@ -42,44 +42,28 @@ typedef enum { KEYWRAP_7836 = 1 } keywrap_algo_t;
 typedef struct
 {
   vko_algo_t vko_algo;
-  union
+  struct
   {
-    struct
-    {
-      unsigned char ukm_len;
-      digest_algo_t   vko_digest_algo;
-      digest_params_t vko_digest_params;
-    } vko_7836;
-  } vko_params;
+    unsigned char ukm_len;
+    digest_algo_t   vko_digest_algo;
+    digest_params_t vko_digest_params;
+  } vko_7836;
+
   kdf_algo_t kdf_algo;
-  union
+  struct
   {
-    struct
-    {
-      cipher_algo_t kdf_cipher_algo;
-      cipher_params_t kdf_cipher_params;
-    } kdf_4357;
-    struct
-    {
-      unsigned char seed_len;
-      char *label;
-      unsigned char R;
-      unsigned int L;
-      digest_algo_t   kdf_digest_algo;
-      digest_params_t kdf_digest_params;
-    } kdf_7836;
-  } kdf_params;
+    cipher_algo_t kdf_cipher_algo;
+    cipher_params_t kdf_cipher_params;
+  } kdf_4357;
+
   keywrap_algo_t keywrap_algo;
-  union
+  struct
   {
-    struct
-    {
-      mac_algo_t   keywrap_mac_algo;
-      mac_params_t keywrap_mac_params;
-      cipher_algo_t   keywrap_cipher_algo;
-      cipher_params_t keywrap_cipher_params;
-    } keywrap_7836;
-  } keywrap_params;
+    mac_algo_t   keywrap_mac_algo;
+    mac_params_t keywrap_mac_params;
+    cipher_algo_t   keywrap_cipher_algo;
+    cipher_params_t keywrap_cipher_params;
+  } keywrap_7836;
 } gost_kdf_params_t;
 
 /* Function prototypes.  */

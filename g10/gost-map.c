@@ -2,7 +2,7 @@
 #include "gost-map.h"
 
 int
-map_cipher_openpgp_to_gcry (int openpgp_id)
+map_gost_cipher_openpgp_to_gcry (int openpgp_id)
 {
   switch (openpgp_id)
     {
@@ -18,9 +18,9 @@ map_cipher_openpgp_to_gcry (int openpgp_id)
 }
 
 const char *
-cipher_params_to_sbox (void *cipher_params)
+cipher_params_to_sbox (cipher_params_t *cipher_params)
 {
-  switch ((int)(intptr_t)cipher_params)
+  switch ((int)(intptr_t)*cipher_params)
     {
     case CIPHER_PARAMS_GOST28147_A: return "1.2.643.2.2.31.1";
     case CIPHER_PARAMS_GOST28147_B: return "1.2.643.2.2.31.2";
@@ -48,9 +48,9 @@ map_mac_openpgp_to_gcry (int openpgp_id)
 }
 
 const char *
-mac_params_to_sbox (void *mac_params)
+mac_params_to_sbox (mac_params_t *mac_params)
 {
-  switch ((int)(intptr_t)mac_params)
+  switch ((int)(intptr_t)*mac_params)
     {
     case MAC_PARAMS_GOST28147_A: return "1.2.643.2.2.31.1";
     case MAC_PARAMS_GOST28147_B: return "1.2.643.2.2.31.2";

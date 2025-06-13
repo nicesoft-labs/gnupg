@@ -19,9 +19,9 @@ unpack_gost_kdf_params (unsigned char *packed, gost_kdf_params_t **r_params)
   switch (p->vko_algo)
     {
     case VKO_7836:
-      p->vko_params.vko_7836.ukm_len = packed[pos++];
-      p->vko_params.vko_7836.vko_digest_algo = packed[pos++];
-      p->vko_params.vko_7836.vko_digest_params = packed[pos++];
+      p->vko_7836.ukm_len = packed[pos++];
+      p->vko_7836.vko_digest_algo = packed[pos++];
+      p->vko_7836.vko_digest_params = packed[pos++];
       break;
     default:
       ret = GPG_ERR_UNKNOWN_ALGORITHM;
@@ -32,8 +32,8 @@ unpack_gost_kdf_params (unsigned char *packed, gost_kdf_params_t **r_params)
   switch (p->kdf_algo)
     {
     case GOST_KDF_CPDIVERS:
-      p->kdf_params.kdf_4357.kdf_cipher_algo = packed[pos++];
-      p->kdf_params.kdf_4357.kdf_cipher_params = packed[pos++];
+      p->kdf_4357.kdf_cipher_algo = packed[pos++];
+      p->kdf_4357.kdf_cipher_params = packed[pos++];
       break;
     case KDF_NULL:
       break;
@@ -49,10 +49,10 @@ unpack_gost_kdf_params (unsigned char *packed, gost_kdf_params_t **r_params)
   switch (p->keywrap_algo)
     {
     case KEYWRAP_7836:
-      p->keywrap_params.keywrap_7836.keywrap_mac_algo = packed[pos++];
-      p->keywrap_params.keywrap_7836.keywrap_mac_params = packed[pos++];
-      p->keywrap_params.keywrap_7836.keywrap_cipher_algo = packed[pos++];
-      p->keywrap_params.keywrap_7836.keywrap_cipher_params = packed[pos++];
+      p->keywrap_7836.keywrap_mac_algo = packed[pos++];
+      p->keywrap_7836.keywrap_mac_params = packed[pos++];
+      p->keywrap_7836.keywrap_cipher_algo = packed[pos++];
+      p->keywrap_7836.keywrap_cipher_params = packed[pos++];
       break;
     default:
       ret = GPG_ERR_UNKNOWN_ALGORITHM;
