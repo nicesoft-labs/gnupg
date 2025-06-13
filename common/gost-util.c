@@ -27,7 +27,6 @@
 #include "util.h"
 
 /* Reverse the byte order in a buffer */
-static void
 void flip_buffer(unsigned char *buffer, unsigned int length)
 {
     size_t i;
