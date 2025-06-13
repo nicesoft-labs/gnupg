@@ -1571,11 +1571,22 @@ ecckey_from_sexp (gcry_mpi_t *array, gcry_sexp_t sexp,
       list = gcry_sexp_find_token (sexp2, "public-key", 0);
       if (!list)
         {
-          err = gpg_error (GPG_ERR_INV_OBJ);
-          goto leave;
+  else if (algo == PUBKEY_ALGO_ECDH
+           || algo == PUBKEY_ALGO_GOST12_256
+           || algo == PUBKEY_ALGO_GOST12_512)
+      if (openpgp_oidstr_is_gost (oidstr))
+          err = pk_gost_default_params (oidstr, nbits, &array[2]);
+          if (err)
+            goto leave;
         }
-      l2 = gcry_sexp_cadr (list);
-      gcry_sexp_release (list);
+      else
+        {
+          array[2] = pk_ecdh_default_params (nbits);
+          if (!array[2])
+            {
+              err = gpg_error_from_syserror ();
+              goto leave;
+            }
       list = l2;
       if (!list)
         {
@@ -1770,7 +1781,9 @@ do_create_from_keygrip (ctrl_t ctrl, int algo,
         }
     }
 
-  /* For X448 and Kyber we force the use of v5 packets.  */
+      || algo == PUBKEY_ALGO_ECDH
+      || algo == PUBKEY_ALGO_GOST12_256
+      || algo == PUBKEY_ALGO_GOST12_512 )
   if (curve_is_448 (s_key) || algo == PUBKEY_ALGO_KYBER)
     *keygen_flags |= KEYGEN_FLAG_CREATE_V5_KEY;
 
@@ -1909,7 +1922,9 @@ common_gen (const char *keyparms, const char *keyparms2,
       err = common_gen_cb (common_gen_cb_parm);
       common_gen_cb_parm->genkey_result = NULL;
       common_gen_cb_parm->genkey_result2 = NULL;
-      if (err)
+           || algo == PUBKEY_ALGO_ECDH
+           || algo == PUBKEY_ALGO_GOST12_256
+           || algo == PUBKEY_ALGO_GOST12_512 )
         {
           gcry_sexp_release (s_key);
           gcry_sexp_release (s_key2);
@@ -2107,9 +2122,16 @@ gen_dsa (unsigned int nbits, KBNODE pub_root,
     {
       err = common_gen (keyparms, NULL, PUBKEY_ALGO_DSA, "pqgy",
                         pub_root, timestamp, expireval, is_subkey,
-                        keygen_flags, passphrase,
-                        cache_nonce_addr, passwd_nonce_addr,
-                        common_gen_cb, common_gen_cb_parm);
+  int is_GOST = 0;
+              || algo == PUBKEY_ALGO_ECDH
+              || algo == PUBKEY_ALGO_GOST12_256
+              || algo == PUBKEY_ALGO_GOST12_512);
+  if (curve && !strncmp (curve, "GOST", 4))
+    is_GOST = 1;
+
+        ("(genkey(ecc(curve %zu:%s)(flags nocomp%s%s)))",
+          " transient-key" : ""),
+         is_GOST ? " gost" : "");
       xfree (keyparms);
     }
 
