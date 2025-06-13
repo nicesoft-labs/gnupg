@@ -198,6 +198,7 @@ static unsigned int get_keysize_range (int algo,
 static void do_add_notation (PKT_signature *sig,
                              const char *name, const char *value,
                              int critical);
+int openpgp_oidstr_is_gost (const char *oidstr);
 
 
 
@@ -1571,11 +1572,22 @@ ecckey_from_sexp (gcry_mpi_t *array, gcry_sexp_t sexp,
       list = gcry_sexp_find_token (sexp2, "public-key", 0);
       if (!list)
         {
-          err = gpg_error (GPG_ERR_INV_OBJ);
-          goto leave;
+  else if (algo == PUBKEY_ALGO_ECDH
+           || algo == PUBKEY_ALGO_GOST12_256
+           || algo == PUBKEY_ALGO_GOST12_512)
+      if (openpgp_oidstr_is_gost (oidstr))
+          err = pk_gost_default_params (oidstr, nbits, &array[2]);
+          if (err)
+            goto leave;
         }
-      l2 = gcry_sexp_cadr (list);
-      gcry_sexp_release (list);
+      else
+        {
+          array[2] = pk_ecdh_default_params (nbits);
+          if (!array[2])
+            {
+              err = gpg_error_from_syserror ();
+              goto leave;
+            }
       list = l2;
       if (!list)
         {
@@ -1747,6 +1759,12 @@ do_create_from_keygrip (ctrl_t ctrl, int algo,
       if (err)
         {
           xfree (hexkeygrip_buffer);
+  else if (algo == PUBKEY_ALGO_ECDSA || algo == PUBKEY_ALGO_EDDSA ||
+           algo == PUBKEY_ALGO_ECDH || algo == PUBKEY_ALGO_GOST12_256 ||
+           algo == PUBKEY_ALGO_GOST12_512)
+    {
+      ;
+    }
           return err;
         }
       if (hexkeygrip2)
@@ -1909,7 +1927,9 @@ common_gen (const char *keyparms, const char *keyparms2,
       err = common_gen_cb (common_gen_cb_parm);
       common_gen_cb_parm->genkey_result = NULL;
       common_gen_cb_parm->genkey_result2 = NULL;
-      if (err)
+           || algo == PUBKEY_ALGO_ECDH
+           || algo == PUBKEY_ALGO_GOST12_256
+           || algo == PUBKEY_ALGO_GOST12_512 )
         {
           gcry_sexp_release (s_key);
           gcry_sexp_release (s_key2);
@@ -2110,7 +2130,9 @@ gen_dsa (unsigned int nbits, KBNODE pub_root,
                         keygen_flags, passphrase,
                         cache_nonce_addr, passwd_nonce_addr,
                         common_gen_cb, common_gen_cb_parm);
-      xfree (keyparms);
+              || algo == PUBKEY_ALGO_ECDH
+              || algo == PUBKEY_ALGO_GOST12_256
+              || algo == PUBKEY_ALGO_GOST12_512);
     }
 
   return err;
