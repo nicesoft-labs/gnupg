@@ -44,4 +44,20 @@ gpg_error_t ecc_build_kdf_params (unsigned char **r_kdf_params, size_t *r_len,
                                   gcry_mpi_t *pkey,
                                   const byte fp[MAX_FINGERPRINT_LEN]);
 
+/* -- gost.c -- */
+gpg_error_t pk_gost_default_params (const char *oidstr, unsigned int qbits,
+                                    gcry_mpi_t *r_params);
+gpg_error_t pk_gost_generate_ukm (gcry_mpi_t *pkey, gcry_mpi_t *r_ukm,
+                                  unsigned int *r_nbits);
+gpg_error_t pk_gost_encrypt_with_shared_point (gcry_mpi_t shared,
+                                               gcry_mpi_t ukm,
+                                               gcry_mpi_t data,
+                                               gcry_mpi_t *pkey,
+                                               gcry_mpi_t *r_result);
+gpg_error_t pk_gost_decrypt_with_shared_point (gcry_mpi_t shared,
+                                               gcry_mpi_t ukm,
+                                               gcry_mpi_t data,
+                                               gcry_mpi_t *pkey,
+                                               gcry_mpi_t *r_result);
+
 #endif /*GNUPG_G10_PKGLUE_H*/

@@ -114,9 +114,10 @@ common_source =  \
 	      plaintext.c	\
 	      sig-check.c	\
 	      keylist.c 	\
-	      pkglue.c pkglue.h \
-	      objcache.c objcache.h \
-	      ecdh.c
+              pkglue.c pkglue.h \
+              objcache.c objcache.h \
+              ecdh.c \
+              gost.c
 
 gpg_sources = server.c          \
 	      $(common_source)	\
