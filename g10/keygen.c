@@ -1572,10 +1572,8 @@ ecckey_from_sexp (gcry_mpi_t *array, gcry_sexp_t sexp,
       list = gcry_sexp_find_token (sexp2, "public-key", 0);
       if (!list)
         {
-  else if (algo == PUBKEY_ALGO_ECDH
-           || algo == PUBKEY_ALGO_GOST12_256
-           || algo == PUBKEY_ALGO_GOST12_512)
-      if (openpgp_oidstr_is_gost (oidstr))
+          err = gpg_error (GPG_ERR_INV_OBJ);
+          goto leave;
         }
       l2 = gcry_sexp_cadr (list);
       gcry_sexp_release (list);
@@ -1600,7 +1598,9 @@ ecckey_from_sexp (gcry_mpi_t *array, gcry_sexp_t sexp,
           goto leave;
         }
     }
-  else if (algo == PUBKEY_ALGO_ECDH)
+  else if (algo == PUBKEY_ALGO_ECDH
+           || algo == PUBKEY_ALGO_GOST12_256
+           || algo == PUBKEY_ALGO_GOST12_512)
     {
 	if (openpgp_oidstr_is_gost (oidstr))
         {
@@ -1756,15 +1756,17 @@ do_create_from_keygrip (ctrl_t ctrl, int algo,
       err = gcry_sexp_sscan (&s_key, NULL, public,
                                gcry_sexp_canon_len (public, 0, NULL, NULL));
       xfree (public);
-  /* For X448, Kyber and GOST we force the use of v5 packets.  */
-  if (curve_is_448 (s_key)
-      || algo == PUBKEY_ALGO_KYBER
-      || algo == PUBKEY_ALGO_GOST12_256
-      || algo == PUBKEY_ALGO_GOST12_512)
-           || algo == PUBKEY_ALGO_EDDSA
-           || algo == PUBKEY_ALGO_ECDH
-           || algo == PUBKEY_ALGO_GOST12_256
-           || algo == PUBKEY_ALGO_GOST12_512)
+      if (err)
+        {
+          xfree (hexkeygrip_buffer);
+          return err;
+        }
+      if (hexkeygrip2)
+        {
+          err = agent_readkey (ctrl, 0, hexkeygrip2, &public);
+          if (err)
+            {
+              gcry_sexp_release (s_key);
               xfree (hexkeygrip_buffer);
               return err;
             }
@@ -1781,15 +1783,11 @@ do_create_from_keygrip (ctrl_t ctrl, int algo,
     }
 
   /* For X448 and Kyber we force the use of v5 packets.  */
-  if (curve_is_448 (s_key) || algo == PUBKEY_ALGO_KYBER)
+  if (curve_is_448 (s_key)
+      || algo == PUBKEY_ALGO_KYBER
+      || algo == PUBKEY_ALGO_GOST12_256
+      || algo == PUBKEY_ALGO_GOST12_512)
     *keygen_flags |= KEYGEN_FLAG_CREATE_V5_KEY;
-
-else if (algo == PUBKEY_ALGO_ECDSA || algo == PUBKEY_ALGO_EDDSA ||
-         algo == PUBKEY_ALGO_ECDH || algo == PUBKEY_ALGO_GOST12_256 ||
-         algo == PUBKEY_ALGO_GOST12_512)
-  {
-    ;
-  }
 
   /* Build a public key packet.  */
   pk = xtrycalloc (1, sizeof *pk);
@@ -1812,7 +1810,10 @@ else if (algo == PUBKEY_ALGO_ECDSA || algo == PUBKEY_ALGO_EDDSA ||
     err = ecckey_from_sexp (pk->pkey, s_key, s_key2, algo, pk->version);
   else if (algo == PUBKEY_ALGO_ECDSA
       || algo == PUBKEY_ALGO_EDDSA
-      || algo == PUBKEY_ALGO_ECDH )
+      || algo == PUBKEY_ALGO_EDDSA
+      || algo == PUBKEY_ALGO_ECDH
+      || algo == PUBKEY_ALGO_GOST12_256
+      || algo == PUBKEY_ALGO_GOST12_512)
     err = ecckey_from_sexp (pk->pkey, s_key, NULL, algo, pk->version);
   else
     err = key_from_sexp (pk->pkey, s_key, "public-key", algoelem);
@@ -2131,13 +2132,8 @@ gen_dsa (unsigned int nbits, KBNODE pub_root,
     {
       err = common_gen (keyparms, NULL, PUBKEY_ALGO_DSA, "pqgy",
                         pub_root, timestamp, expireval, is_subkey,
-  int is_GOST = 0;
-  if (0 == strncmp (curve, "GOST", 4))
-    is_GOST = 1;
-
-        ("(genkey(ecc(curve %zu:%s)(flags nocomp%s%s)))",
-          " transient-key" : ""),
-         is_GOST ? " gost" : "");
+                        keygen_flags, passphrase,
+                        cache_nonce_addr, passwd_nonce_addr,
                         common_gen_cb, common_gen_cb_parm);
       xfree (keyparms);
     }
@@ -2162,6 +2158,7 @@ gen_ecc (int algo, const char *curve, kbnode_t pub_root,
 {
   gpg_error_t err;
   char *keyparms;
+  int is_GOST = 0;
 
   log_assert (algo == PUBKEY_ALGO_ECDSA
               || algo == PUBKEY_ALGO_EDDSA
@@ -2182,6 +2179,8 @@ gen_ecc (int algo, const char *curve, kbnode_t pub_root,
     curve = "X448";
   else if (!ascii_strcasecmp (curve, "ed448"))
     curve = "Ed448";
+  if (0 == strncmp (curve, "GOST", 4))
+    is_GOST = 1;
 
   /* Note that we use the "comp" flag with EdDSA to request the use of
      a 0x40 compression prefix octet.  */
@@ -2226,11 +2225,12 @@ gen_ecc (int algo, const char *curve, kbnode_t pub_root,
   else
     {
       keyparms = xtryasprintf
-        ("(genkey(ecc(curve %zu:%s)(flags nocomp%s)))",
+       ("(genkey(ecc(curve %zu:%s)(flags nocomp%s%s)))",
          strlen (curve), curve,
          (((*keygen_flags & KEYGEN_FLAG_TRANSIENT_KEY)
            && (*keygen_flags & KEYGEN_FLAG_NO_PROTECTION))?
-          " transient-key" : ""));
+          " transient-key" : ""),
+	  is_GOST ? " gost" : "");
     }
 
   if (!keyparms)
@@ -7285,9 +7285,7 @@ gen_card_key (int keyno, int algo, int is_primary, kbnode_t pub_root,
       xfree (pk);
       return err;
     }
-           || algo == PUBKEY_ALGO_ECDH
-           || algo == PUBKEY_ALGO_GOST12_256
-           || algo == PUBKEY_ALGO_GOST12_512)
+  err = gcry_sexp_sscan (&s_key, NULL, public,
                          gcry_sexp_canon_len (public, 0, NULL, NULL));
   xfree (public);
   if (err)
@@ -7307,7 +7305,9 @@ gen_card_key (int keyno, int algo, int is_primary, kbnode_t pub_root,
     err = key_from_sexp (pk->pkey, s_key, "public-key", "ne");
   else if (algo == PUBKEY_ALGO_ECDSA
            || algo == PUBKEY_ALGO_EDDSA
-           || algo == PUBKEY_ALGO_ECDH )
+           || algo == PUBKEY_ALGO_ECDH
+           || algo == PUBKEY_ALGO_GOST12_256
+           || algo == PUBKEY_ALGO_GOST12_512)
     err = ecckey_from_sexp (pk->pkey, s_key, NULL, algo, pk->version);
   else
     err = gpg_error (GPG_ERR_PUBKEY_ALGO);
