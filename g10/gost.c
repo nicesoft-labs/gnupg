@@ -34,23 +34,29 @@ static const struct
   const char *oidpfx;
   unsigned int qbits;
   gost_kdf_params_t params;
-} gost_kdf_params_table[] =
-  {
-    { "1.2.643.7.1.2.1.1.", 256,
-      { VKO_7836, { 8, DIGEST_ALGO_GOSTR3411_12_256, DIGEST_PARAMS_UNSPECIFIED },
-        GOST_KDF_CPDIVERS, { CIPHER_ALGO_GOST28147, CIPHER_PARAMS_GOST28147_Z },
-        KEYWRAP_7836,
-        { MAC_ALGO_GOST28147_IMIT, MAC_PARAMS_GOST28147_Z,
-          CIPHER_ALGO_GOST28147, CIPHER_PARAMS_GOST28147_Z } }
-    },
-    { "1.2.643.7.1.2.1.2.", 512,
-      { VKO_7836, { 8, DIGEST_ALGO_GOSTR3411_12_256, DIGEST_PARAMS_UNSPECIFIED },
-        GOST_KDF_CPDIVERS, { CIPHER_ALGO_GOST28147, CIPHER_PARAMS_GOST28147_Z },
-        KEYWRAP_7836,
-        { MAC_ALGO_GOST28147_IMIT, MAC_PARAMS_GOST28147_Z,
-          CIPHER_ALGO_GOST28147, CIPHER_PARAMS_GOST28147_Z } }
+} gost_kdf_params_table[] = {{
+    "1.2.643.7.1.2.1.1.", 256,
+    {
+      .vko_algo = VKO_7836,
+      .vko_7836 = { 8, DIGEST_ALGO_GOSTR3411_12_256, DIGEST_PARAMS_UNSPECIFIED },
+      .kdf_algo = GOST_KDF_CPDIVERS,
+      .kdf_4357 = { CIPHER_ALGO_GOST28147, CIPHER_PARAMS_GOST28147_Z },
+      .keywrap_algo = KEYWRAP_7836,
+      .keywrap_7836 = { MAC_ALGO_GOST28147_IMIT, MAC_PARAMS_GOST28147_Z,
+                        CIPHER_ALGO_GOST28147, CIPHER_PARAMS_GOST28147_Z }
     }
-  };
+  },{
+    "1.2.643.7.1.2.1.2.", 512,
+    {
+      .vko_algo = VKO_7836,
+      .vko_7836 = { 8, DIGEST_ALGO_GOSTR3411_12_256, DIGEST_PARAMS_UNSPECIFIED },
+      .kdf_algo = GOST_KDF_CPDIVERS,
+      .kdf_4357 = { CIPHER_ALGO_GOST28147, CIPHER_PARAMS_GOST28147_Z },
+      .keywrap_algo = KEYWRAP_7836,
+      .keywrap_7836 = { MAC_ALGO_GOST28147_IMIT, MAC_PARAMS_GOST28147_Z,
+                        CIPHER_ALGO_GOST28147, CIPHER_PARAMS_GOST28147_Z }
+    }
+  }};
 
 /* Pack parameter set PARAMS into BUF and update LENGTH.  */
 static gpg_error_t
@@ -195,10 +201,10 @@ pk_gost_encrypt_with_shared_point (gcry_mpi_t shared, gcry_mpi_t ukm,
     {
     case KEYWRAP_7836:
       ret = gost_keywrap (&encoded_key,
-                          map_cipher_openpgp_to_gcry (kdf_params->keywrap_params.keywrap_7836.keywrap_cipher_algo),
-                          cipher_params_to_sbox (kdf_params->keywrap_params.keywrap_7836.keywrap_cipher_params),
-                          map_mac_openpgp_to_gcry (kdf_params->keywrap_params.keywrap_7836.keywrap_mac_algo),
-                          mac_params_to_sbox (kdf_params->keywrap_params.keywrap_7836.keywrap_mac_params),
+                          map_gost_cipher_openpgp_to_gcry (kdf_params->keywrap_7836.keywrap_cipher_algo),
+                          cipher_params_to_sbox (&kdf_params->keywrap_7836.keywrap_cipher_params),
+                          map_mac_openpgp_to_gcry (kdf_params->keywrap_7836.keywrap_mac_algo),
+                          mac_params_to_sbox (&kdf_params->keywrap_7836.keywrap_mac_params),
                           data, ukm, kek);
       break;
     default:
@@ -334,10 +340,10 @@ pk_gost_decrypt_with_shared_point (gcry_mpi_t shared, gcry_mpi_t ukm,
     {
     case KEYWRAP_7836:
       ret = gost_keyunwrap (r_result,
-                            map_cipher_openpgp_to_gcry (kdf_params->keywrap_params.keywrap_7836.keywrap_cipher_algo),
-                            cipher_params_to_sbox (kdf_params->keywrap_params.keywrap_7836.keywrap_cipher_params),
-                            map_mac_openpgp_to_gcry (kdf_params->keywrap_params.keywrap_7836.keywrap_mac_algo),
-                            mac_params_to_sbox (kdf_params->keywrap_params.keywrap_7836.keywrap_mac_params),
+                            map_gost_cipher_openpgp_to_gcry (kdf_params->keywrap_7836.keywrap_cipher_algo),
+                            cipher_params_to_sbox (&kdf_params->keywrap_7836.keywrap_cipher_params),
+                            map_mac_openpgp_to_gcry (kdf_params->keywrap_7836.keywrap_mac_algo),
+                            mac_params_to_sbox (&kdf_params->keywrap_7836.keywrap_mac_params),
                             data_buf + 1, data_len - 1, ukm, kek);
       break;
     default:

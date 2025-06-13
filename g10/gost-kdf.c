@@ -35,9 +35,9 @@ unpack_gost_kdf_params (unsigned char *packed, gost_kdf_params_t **r_params)
   switch (p->vko_algo)
     {
     case VKO_7836:
-      p->vko_params.vko_7836.ukm_len = packed[pos++];
-      p->vko_params.vko_7836.vko_digest_algo = packed[pos++];
-      p->vko_params.vko_7836.vko_digest_params = packed[pos++];
+      p->vko_7836.ukm_len = packed[pos++];
+      p->vko_7836.vko_digest_algo = packed[pos++];
+      p->vko_7836.vko_digest_params = packed[pos++];
       break;
     default:
       ret = GPG_ERR_UNKNOWN_ALGORITHM;
@@ -48,8 +48,8 @@ unpack_gost_kdf_params (unsigned char *packed, gost_kdf_params_t **r_params)
   switch (p->kdf_algo)
     {
     case GOST_KDF_CPDIVERS:
-      p->kdf_params.kdf_4357.kdf_cipher_algo = packed[pos++];
-      p->kdf_params.kdf_4357.kdf_cipher_params = packed[pos++];
+      p->kdf_4357.kdf_cipher_algo = packed[pos++];
+      p->kdf_4357.kdf_cipher_params = packed[pos++];
       break;
     case KDF_NULL:
       break;
@@ -66,10 +66,10 @@ unpack_gost_kdf_params (unsigned char *packed, gost_kdf_params_t **r_params)
   switch (p->keywrap_algo)
     {
     case KEYWRAP_7836:
-      p->keywrap_params.keywrap_7836.keywrap_mac_algo = packed[pos++];
-      p->keywrap_params.keywrap_7836.keywrap_mac_params = packed[pos++];
-      p->keywrap_params.keywrap_7836.keywrap_cipher_algo = packed[pos++];
-      p->keywrap_params.keywrap_7836.keywrap_cipher_params = packed[pos++];
+      p->keywrap_7836.keywrap_mac_algo = packed[pos++];
+      p->keywrap_7836.keywrap_mac_params = packed[pos++];
+      p->keywrap_7836.keywrap_cipher_algo = packed[pos++];
+      p->keywrap_7836.keywrap_cipher_params = packed[pos++];
       break;
     default:
       ret = GPG_ERR_UNKNOWN_ALGORITHM;
@@ -89,8 +89,6 @@ free_gost_kdf_params (gost_kdf_params_t *p)
 {
   if (!p)
     return;
-  if (p->kdf_algo == GOST_KDF_TREE && p->kdf_params.kdf_7836.label)
-    xfree (p->kdf_params.kdf_7836.label);
   xfree (p);
 }
 
@@ -115,8 +113,8 @@ gost_kdf (const gost_kdf_params_t *params, gcry_mpi_t ukm,
       break;
     case GOST_KDF_CPDIVERS:
       ret = gost_cpdiversify_key (out_kek,
-                                  map_cipher_openpgp_to_gcry (params->kdf_params.kdf_4357.kdf_cipher_algo),
-                                  cipher_params_to_sbox (params->kdf_params.kdf_4357.kdf_cipher_params),
+                                  map_gost_cipher_openpgp_to_gcry (params->kdf_4357.kdf_cipher_algo),
+                                  cipher_params_to_sbox (&params->kdf_4357.kdf_cipher_params),
                                   shared_buf, shared_len, ukm);
       break;
     case GOST_KDF_TREE:
@@ -141,8 +139,8 @@ gost_vko_kdf (const gost_kdf_params_t *params, gcry_mpi_t shared,
     {
     case VKO_7836:
       ret = gost_vko (shared,
-                      map_md_openpgp_to_gcry (params->vko_params.vko_7836.vko_digest_algo),
-                      digest_params_to_oid (params->vko_params.vko_7836.vko_digest_params),
+                      map_md_openpgp_to_gcry (params->vko_7836.vko_digest_algo),
+                      digest_params_to_oid (params->vko_7836.vko_digest_params),
                       &buf, &buflen);
       break;
     default:
