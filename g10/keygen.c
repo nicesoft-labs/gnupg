@@ -2162,7 +2162,7 @@ gen_ecc (int algo, const char *curve, kbnode_t pub_root,
               || algo == PUBKEY_ALGO_EDDSA
               || algo == PUBKEY_ALGO_ECDH
               || algo == PUBKEY_ALGO_GOST12_256
-              || algo == PUBKEY_ALGO_GOST12_512 )
+              || algo == PUBKEY_ALGO_GOST12_512 );
 
   if (!curve || !*curve)
     return gpg_error (GPG_ERR_UNKNOWN_CURVE);
