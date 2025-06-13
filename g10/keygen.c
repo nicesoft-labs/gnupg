@@ -1427,6 +1427,31 @@ write_keybinding (ctrl_t ctrl, kbnode_t root,
       if (node->pkt->pkttype == PKT_PUBLIC_SUBKEY)
         sub_pk = node->pkt->pkt.public_key;
     }
+  if (!sub_pk)
+    BUG();
+
+  /* Make the signature.  */
+  oduap.usage = use;
+  if ((use & PUBKEY_USAGE_ENC)
+      && opt.compliance == CO_DE_VS
+      /* The required libgcrypt 1.11 won't yet claim a compliant RNG.  */
+      && gnupg_rng_is_compliant (CO_DE_VS))
+    oduap.cpl_notation = "de-vs";
+  else
+    oduap.cpl_notation = NULL;
+  oduap.pk = sub_pk;
+  err = make_keysig_packet (ctrl, &sig, pri_pk, NULL, sub_pk, pri_psk, 0x18,
+                            timestamp, 0,
+                            keygen_add_key_flags_from_oduap, &oduap,
+                            cache_nonce);
+  if (err)
+    {
+      log_error ("make_keysig_packet failed: %s\n", gpg_strerror (err));
+      return err;
+    }
+
+  /* Make a backsig.  */
+  if (use & PUBKEY_USAGE_SIG)
     {
       err = make_backsig (ctrl,
                           sig, pri_pk, sub_pk, sub_psk, timestamp, cache_nonce);
@@ -1457,62 +1482,48 @@ curve_is_448 (gcry_sexp_t sexp)
   gcry_sexp_release (list);
   list = l2;
   if (!list)
+    return 0; /* Bad public key.  */
 
+  l2 = gcry_sexp_find_token (list, "curve", 0);
   gcry_sexp_release (list);
+  if (!l2)
+    return 0; /* No curve parameter.  */
+  curve = gcry_sexp_nth_string (l2, 1);
+  gcry_sexp_release (l2);
+  if (!curve)
+    return 0; /* Bad curve parameter.  */
+  result = (!ascii_strcasecmp (curve, "X448")
+            || !ascii_strcasecmp (curve, "Ed448")
+            || !ascii_strcasecmp (curve, "cv448"));
+  xfree (curve);
+  return result;
+}
 
-  list = l2;
-      err = gpg_error (GPG_ERR_INV_OBJ);
-      goto leave;
-    }
 
-  err = openpgp_oid_from_str (oidstr, &array[0]);
-  if (err)
-    goto leave;
+/* Extract the parameters in OpenPGP format from SEXP and put them
+ * into the caller provided ARRAY.  SEXP2 is used to provide the
+ * parameters for dual algorithm (e.g. Kyber).  */
+static gpg_error_t
+ecckey_from_sexp (gcry_mpi_t *array, gcry_sexp_t sexp,
+                  gcry_sexp_t sexp2, int algo, int pkversion)
+{
+  gpg_error_t err;
+  gcry_sexp_t list, l2;
+  char *curve = NULL;
+  int i;
+  const char *oidstr;
+  unsigned int nbits;
 
-  err = sexp_extract_param_sos (list, "q", &array[1]);
-  if (err)
-    goto leave;
+  array[0] = NULL;
+  array[1] = NULL;
+  array[2] = NULL;
 
-  gcry_sexp_release (list);
-  list = NULL;
-
-  if (algo == PUBKEY_ALGO_KYBER)
-      if (!sexp2)
-          err = gpg_error (GPG_ERR_MISSING_VALUE);
-          goto leave;
-
-          err = gpg_error (GPG_ERR_INV_OBJ);
-          goto leave;
-      l2 = gcry_sexp_cadr (list);
-      gcry_sexp_release (list);
   list = gcry_sexp_find_token (sexp, "public-key", 0);
   if (!list)
     return gpg_error (GPG_ERR_INV_OBJ);
   l2 = gcry_sexp_cadr (list);
-      err = gpg_error (GPG_ERR_INV_OBJ);
-      goto leave;
-    }
-
-  err = openpgp_oid_from_str (oidstr, &array[0]);
-  if (err)
-    goto leave;
-
-  err = sexp_extract_param_sos (list, "q", &array[1]);
-  if (err)
-    goto leave;
-
   gcry_sexp_release (list);
-  list = NULL;
-
-  if (algo == PUBKEY_ALGO_KYBER)
-      if (!sexp2)
-          err = gpg_error (GPG_ERR_MISSING_VALUE);
-          goto leave;
-
-          err = gpg_error (GPG_ERR_INV_OBJ);
-          goto leave;
-      l2 = gcry_sexp_cadr (list);
-      gcry_sexp_release (list);
+  list = l2;
   if (!list)
     return gpg_error (GPG_ERR_NO_OBJ);
 
@@ -1534,48 +1545,37 @@ curve_is_448 (gcry_sexp_t sexp)
     {
       /* That can't happen because we used one of the curves
          gpg_curve_to_oid knows about.  */
-          err = gpg_error (GPG_ERR_INV_OBJ);
-          goto leave;
-      l2 = gcry_sexp_cadr (list);
-      gcry_sexp_release (list);
-  else if (algo == PUBKEY_ALGO_ECDH ||
-           algo == PUBKEY_ALGO_GOST12_256 ||
-           algo == PUBKEY_ALGO_GOST12_512)
+      err = gpg_error (GPG_ERR_INV_OBJ);
+      goto leave;
+    }
+
+  err = openpgp_oid_from_str (oidstr, &array[0]);
+  if (err)
+    goto leave;
+
+  err = sexp_extract_param_sos (list, "q", &array[1]);
+  if (err)
+    goto leave;
+
+  gcry_sexp_release (list);
+  list = NULL;
+
+  if (algo == PUBKEY_ALGO_KYBER)
     {
-      if (openpgp_oidstr_is_gost (oidstr))
-          err = pk_gost_default_params (oidstr, nbits, &array[2]);
-          if (err)
-            goto leave;
-        }
-      else
+      if (!sexp2)
         {
-          array[2] = pk_ecdh_default_params (nbits);
-          if (!array[2])
-            {
-              err = gpg_error_from_syserror ();
-              goto leave;
-            }
+          err = gpg_error (GPG_ERR_MISSING_VALUE);
+          goto leave;
         }
-  
+
       list = gcry_sexp_find_token (sexp2, "public-key", 0);
       if (!list)
         {
-  else if (algo == PUBKEY_ALGO_ECDH
-           || algo == PUBKEY_ALGO_GOST12_256
-           || algo == PUBKEY_ALGO_GOST12_512)
-      if (openpgp_oidstr_is_gost (oidstr))
-          err = pk_gost_default_params (oidstr, nbits, &array[2]);
-          if (err)
-            goto leave;
+          err = gpg_error (GPG_ERR_INV_OBJ);
+          goto leave;
         }
-      else
-        {
-          array[2] = pk_ecdh_default_params (nbits);
-          if (!array[2])
-            {
-              err = gpg_error_from_syserror ();
-              goto leave;
-            }
+      l2 = gcry_sexp_cadr (list);
+      gcry_sexp_release (list);
       list = l2;
       if (!list)
         {
@@ -1718,12 +1718,23 @@ do_create_from_keygrip (ctrl_t ctrl, int algo,
     case PUBKEY_ALGO_KYBER:     algoelem = ""; break;
     default:
       xfree (hexkeygrip_buffer);
+      return gpg_error (GPG_ERR_INTERNAL);
+    }
+
+  /* Ask the agent for the public key matching HEXKEYGRIP.  */
+  if (cardkey)
+    {
+      err = agent_scd_readkey (ctrl, hexkeygrip, &s_key, NULL);
       if (err)
         {
           xfree (hexkeygrip_buffer);
           return err;
         }
-  /* For X448 and Kyber we force the use of v5 packets.  */
+    }
+  else
+    {
+      unsigned char *public;
+
       err = agent_readkey (ctrl, 0, hexkeygrip, &public);
       if (err)
         {
@@ -1733,20 +1744,11 @@ do_create_from_keygrip (ctrl_t ctrl, int algo,
       err = gcry_sexp_sscan (&s_key, NULL, public,
                                gcry_sexp_canon_len (public, 0, NULL, NULL));
       xfree (public);
-  /* For X448 and Kyber we force the use of v5 packets.  */
-  if (algo == PUBKEY_ALGO_KYBER)
-    {
-      *keygen_flags |= KEYGEN_FLAG_CREATE_V5_KEY;
-    }
-  else if (algo == PUBKEY_ALGO_ECDSA ||
-           algo == PUBKEY_ALGO_EDDSA ||
-           algo == PUBKEY_ALGO_ECDH ||
-           algo == PUBKEY_ALGO_GOST12_256 ||
-           algo == PUBKEY_ALGO_GOST12_512)
-    {
-      if (curve_is_448 (s_key))
-        *keygen_flags |= KEYGEN_FLAG_CREATE_V5_KEY;
-    }
+      if (err)
+        {
+          xfree (hexkeygrip_buffer);
+          return err;
+        }
       if (hexkeygrip2)
         {
           err = agent_readkey (ctrl, 0, hexkeygrip2, &public);
@@ -1768,9 +1770,7 @@ do_create_from_keygrip (ctrl_t ctrl, int algo,
         }
     }
 
-      || algo == PUBKEY_ALGO_ECDH
-      || algo == PUBKEY_ALGO_GOST12_256
-      || algo == PUBKEY_ALGO_GOST12_512 )
+  /* For X448 and Kyber we force the use of v5 packets.  */
   if (curve_is_448 (s_key) || algo == PUBKEY_ALGO_KYBER)
     *keygen_flags |= KEYGEN_FLAG_CREATE_V5_KEY;
 
@@ -1858,11 +1858,11 @@ common_gen (const char *keyparms, const char *keyparms2,
       return err;
     }
 
-      bin2hex (tmpgrip, KEYGRIP_LEN, hexgrip1);
-      if (!gcry_pk_get_keygrip (s_key2, tmpgrip))
-        {
+  if (keyparms2)
     {
-      if (err)
+      unsigned char tmpgrip[KEYGRIP_LEN];
+      char hexgrip1[2*KEYGRIP_LEN+1];
+      char hexgrip2[2*KEYGRIP_LEN+1];
 
       err = agent_genkey (NULL, NULL, NULL, keyparms2,
                           1 /* No protection */,
@@ -1883,7 +1883,9 @@ common_gen (const char *keyparms, const char *keyparms2,
           gcry_sexp_release (s_key2);
           return gpg_error (GPG_ERR_GENERAL);
         }
-      if (err)
+      bin2hex (tmpgrip, KEYGRIP_LEN, hexgrip1);
+      if (!gcry_pk_get_keygrip (s_key2, tmpgrip))
+        {
           log_error ("error computing keygrip for generated key\n");
           gcry_sexp_release (s_key);
           gcry_sexp_release (s_key2);
@@ -1907,9 +1909,7 @@ common_gen (const char *keyparms, const char *keyparms2,
       err = common_gen_cb (common_gen_cb_parm);
       common_gen_cb_parm->genkey_result = NULL;
       common_gen_cb_parm->genkey_result2 = NULL;
-           || algo == PUBKEY_ALGO_ECDH
-           || algo == PUBKEY_ALGO_GOST12_256
-           || algo == PUBKEY_ALGO_GOST12_512 )
+      if (err)
         {
           gcry_sexp_release (s_key);
           gcry_sexp_release (s_key2);
@@ -2059,6 +2059,29 @@ gen_dsa (unsigned int nbits, KBNODE pub_root,
       log_info(_("keysize rounded up to %u bits\n"), nbits );
     }
 
+  /* To comply with FIPS rules we round up to the next value unless in
+     expert mode.  */
+  if (!opt.expert && nbits > 1024 && (nbits % 1024))
+    {
+      nbits = ((nbits + 1023) / 1024) * 1024;
+      log_info(_("keysize rounded up to %u bits\n"), nbits );
+    }
+
+  /*
+    Figure out a q size based on the key size.  FIPS 180-3 says:
+
+    L = 1024, N = 160
+    L = 2048, N = 224
+    L = 2048, N = 256
+    L = 3072, N = 256
+
+    2048/256 is an odd pair since there is also a 2048/224 and
+    3072/256.  Matching sizes is not a very exact science.
+
+    We'll do 256 qbits for nbits over 2047, 224 for nbits over 1024
+    but less than 2048, and 160 for 1024 (DSA1).
+  */
+
   if (nbits > 2047)
     qbits = 256;
   else if ( nbits > 1024)
@@ -2069,22 +2092,6 @@ gen_dsa (unsigned int nbits, KBNODE pub_root,
   if (qbits != 160 )
     log_info (_("WARNING: some OpenPGP programs can't"
                 " handle a DSA key with this digest size\n"));
-    {
-                        keygen_flags, passphrase,
-                        cache_nonce_addr, passwd_nonce_addr,
-                        common_gen_cb, common_gen_cb_parm);
-    L = 3072, N = 256
-
-    2048/256 is an odd pair since there is also a 2048/224 and
-    3072/256.  Matching sizes is not a very exact science.
-
-    We'll do 256 qbits for nbits over 2047, 224 for nbits over 1024
-    but less than 2048, and 160 for 1024 (DSA1).
-  */
-
-                        keygen_flags, passphrase,
-                        cache_nonce_addr, passwd_nonce_addr,
-                        common_gen_cb, common_gen_cb_parm);
 
   snprintf (nbitsstr, sizeof nbitsstr, "%u", nbits);
   snprintf (qbitsstr, sizeof qbitsstr, "%u", qbits);
@@ -2100,16 +2107,9 @@ gen_dsa (unsigned int nbits, KBNODE pub_root,
     {
       err = common_gen (keyparms, NULL, PUBKEY_ALGO_DSA, "pqgy",
                         pub_root, timestamp, expireval, is_subkey,
-  int is_GOST = 0;
-              || algo == PUBKEY_ALGO_ECDH
-              || algo == PUBKEY_ALGO_GOST12_256
-              || algo == PUBKEY_ALGO_GOST12_512);
-  if (curve && !strncmp (curve, "GOST", 4))
-    is_GOST = 1;
-
-        ("(genkey(ecc(curve %zu:%s)(flags nocomp%s%s)))",
-          " transient-key" : ""),
-         is_GOST ? " gost" : "");
+                        keygen_flags, passphrase,
+                        cache_nonce_addr, passwd_nonce_addr,
+                        common_gen_cb, common_gen_cb_parm);
       xfree (keyparms);
     }
 
