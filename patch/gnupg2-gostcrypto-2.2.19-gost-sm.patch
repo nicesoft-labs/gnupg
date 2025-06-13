@@ -1,0 +1,1319 @@
+ sm/certcheck.c   |  28 +++-
+ sm/decrypt.c     | 368 ++++++++++++++++++++++++++++++++++++++++++++++++----
+ sm/encrypt.c     | 383 +++++++++++++++++++++++++++++++++++++++++++++++--------
+ sm/fingerprint.c |  32 +----
+ sm/gpgsm.c       |   6 +-
+ sm/gpgsm.h       |   4 +-
+ sm/keylist.c     |   6 +-
+ sm/sign.c        |  84 +++++++++---
+ sm/verify.c      |   2 +-
+ 9 files changed, 784 insertions(+), 129 deletions(-)
+
+diff --git a/sm/certcheck.c b/sm/certcheck.c
+index 1102bccad..daf64b1e0 100644
+--- a/sm/certcheck.c
++++ b/sm/certcheck.c
+@@ -32,6 +32,7 @@
+ 
+ #include "keydb.h"
+ #include "../common/i18n.h"
++#include "../common/util.h"
+ 
+ 
+ /* Return the number of bits of the Q parameter from the DSA key
+@@ -121,6 +122,15 @@ do_encode_md (gcry_md_hd_t md, int algo, int pkalgo, unsigned int nbits,
+       /* Truncate.  */
+       if (n > qbits/8)
+         n = qbits/8;
++
++	  switch (algo) {
++	  case GCRY_MD_GOSTR3411_CP:
++	  case GCRY_MD_GOSTR3411_94:
++	  case GCRY_MD_STRIBOG256:
++	  case GCRY_MD_STRIBOG512:
++		  flip_buffer (frame, n);
++		  break;
++	  }
+     }
+   else
+     {
+@@ -209,7 +219,8 @@ pk_algo_from_sexp (gcry_sexp_t pkey)
+     algo = GCRY_PK_DSA;
+   /* Because this function is called only for verification we can
+      assume that ECC actually means ECDSA.  */
+-  else if (n==3 && !memcmp (name, "ecc", 3))
++  else if ((n==3 && !memcmp (name, "ecc", 3)) ||
++		   (n==4 && !memcmp (name, "gost", 4)))
+     algo = GCRY_PK_ECDSA;
+   else if (n==13 && !memcmp (name, "ambiguous-rsa", 13))
+     algo = GCRY_PK_RSA;
+@@ -427,8 +438,19 @@ gpgsm_create_cms_signature (ctrl_t ctrl, ksba_cert_t cert,
+ 
+   desc = gpgsm_format_keydesc (cert);
+ 
+-  rc = gpgsm_agent_pksign (ctrl, grip, desc, gcry_md_read(md, mdalgo),
+-                           gcry_md_get_algo_dlen (mdalgo), mdalgo,
++  unsigned char *digest = gcry_md_read(md, mdalgo);
++  unsigned int digest_len = gcry_md_get_algo_dlen (mdalgo);
++
++  switch (mdalgo) {
++  case GCRY_MD_GOSTR3411_94:
++  case GCRY_MD_GOSTR3411_CP:
++  case GCRY_MD_STRIBOG256:
++  case GCRY_MD_STRIBOG512:
++    flip_buffer (digest, digest_len);
++    break;
++  }
++
++  rc = gpgsm_agent_pksign (ctrl, grip, desc, digest, digest_len, mdalgo,
+                            r_sigval, &siglen);
+   xfree (desc);
+   xfree (grip);
+diff --git a/sm/decrypt.c b/sm/decrypt.c
+index db0768eea..d1309e7e5 100644
+--- a/sm/decrypt.c
++++ b/sm/decrypt.c
+@@ -33,14 +33,16 @@
+ #include "keydb.h"
+ #include "../common/i18n.h"
+ #include "../common/compliance.h"
++#include "../common/gost-util.h"
+ 
+ struct decrypt_filter_parm_s
+ {
+   int algo;
++  const char *sbox_oid;
+   int mode;
+   int blklen;
+   gcry_cipher_hd_t hd;
+-  char iv[16];
++  char iv[32];
+   size_t ivlen;
+   int any_data;  /* did we push anything through the filter at all? */
+   unsigned char lastblock[16];  /* to strip the padding we have to
+@@ -61,6 +63,9 @@ prepare_decryption (ctrl_t ctrl, const char *hexkeygrip, const char *desc,
+ {
+   char *seskey = NULL;
+   size_t n, seskeylen;
++  gcry_sexp_t enc_val_s = NULL;
++  gcry_mpi_t shared_mpi = NULL;
++  gcry_mpi_t decoded = NULL;
+   int rc;
+ 
+   rc = gpgsm_agent_pkdecrypt (ctrl, hexkeygrip, desc, enc_val,
+@@ -75,7 +80,259 @@ prepare_decryption (ctrl_t ctrl, const char *hexkeygrip, const char *desc,
+     log_printhex ("pkcs1 encoded session key:", seskey, seskeylen);
+ 
+   n=0;
+-  if (seskeylen == 32 || seskeylen == 24 || seskeylen == 16)
++  if (parm->algo == GCRY_CIPHER_GOST28147)
++	{
++      unsigned char *kek_buf = NULL;
++      gcry_mpi_t kek = NULL;
++      gcry_mpi_t ukm = NULL;
++      char *wrapped_buf = NULL;
++      char *digest = NULL;
++      char *curve = NULL;
++
++	  /* GOST28147 KEK (key encryption key) for the deversivied
++		 (wrapped) key */
++	  rc = gcry_mpi_scan (&shared_mpi, GCRYMPI_FMT_USG, seskey, seskeylen,
++						  NULL);
++      if (rc) goto leave_gost;
++
++      size_t encval_len = gcry_sexp_canon_len (enc_val, 0, NULL, &rc);
++      if (rc) goto leave_gost;
++	  rc = gcry_sexp_new (&enc_val_s, enc_val, encval_len, 0);
++	  if (rc) goto leave_gost;
++
++	  gcry_sexp_t the_enc_val = gcry_sexp_find_token (enc_val_s, "enc-val", 0);
++	  if (!the_enc_val)
++		{
++		  rc = gpg_error (GPG_ERR_INV_SEXP);
++		  goto leave_gost;
++		}
++
++	  gcry_sexp_t curve_val = gcry_sexp_find_token (the_enc_val, "curve", 0);
++	  if (curve_val)
++        curve = gcry_sexp_nth_string (curve_val, 1);
++      if (!curve)
++        {
++          rc = gpg_error (GPG_ERR_INV_SEXP);
++          goto leave_gost;
++        }
++
++	  gcry_sexp_t digest_val = gcry_sexp_find_token (the_enc_val, "digest", 0);
++	  if (digest_val)
++        digest = gcry_sexp_nth_string (digest_val, 1);
++
++      const char *digest_params = NULL;
++      enum gcry_md_algos digest_algo;
++      if (digest)
++        {
++          if (0 == strcmp (digest, "1.2.643.2.2.30.1"))
++            {
++              digest_algo = GCRY_MD_GOSTR3411_CP;
++              digest_params = "1.2.643.2.2.30.1";
++            }
++          else if (0 == strcmp (digest, "1.2.643.7.1.1.2.2") ||
++                   0 == strcmp (digest, "1.2.643.7.1.1.2.3"))
++            {
++              digest_algo = GCRY_MD_STRIBOG256;
++              digest_params = NULL;
++            }
++          else
++            {
++              rc = gpg_error (GPG_ERR_UNSUPPORTED_ALGORITHM);
++              goto leave_gost;
++            }
++        }
++      else
++        {
++          /* Key digest seems to be an optional value.
++             The KEK digest has to be determined from the curve algo.
++             FIXME: It's better to use the key algorithm OID that
++             is not currently included in the sexp. */
++          if (0 == strncmp (curve, "1.2.643.2.2.35.", 15) ||
++              0 == strncmp (curve, "1.2.643.2.2.36.", 15))
++            {
++              // GOST2001-CryptoPro-A,B,C
++              digest_algo = GCRY_MD_GOSTR3411_CP;
++              digest_params = "1.2.643.2.2.30.1";
++            }
++          else if (0 == strncmp (curve, "1.2.643.7.1.2.1.1.", 18) ||
++                   0 == strncmp (curve, "1.2.643.7.1.2.1.2.", 18))
++            {
++              // GOST2012-256-A,B,C,D or GOST2012-512-A,B
++              digest_algo = GCRY_MD_STRIBOG256;
++              digest = NULL;
++            }
++          else
++            {
++              rc = gpg_error (GPG_ERR_UNSUPPORTED_ALGORITHM);
++              goto leave_gost;
++            }
++        }
++
++      if (DBG_CRYPTO)
++        log_debug ("KEK digest: %s\n", gcry_md_algo_name (digest_algo));
++
++      size_t kek_len = 0;
++      unsigned int shared_len = (gcry_mpi_get_nbits (shared_mpi)+7)/8;
++      if ( shared_len == gcry_md_get_algo_dlen (digest_algo) )
++        {
++          if (DBG_CRYPTO)
++            log_debug ("GOST shared point: --\n");
++
++          kek_len = shared_len;
++          kek_buf = xtrymalloc_secure (kek_len);
++          if (!kek_buf)
++            {
++              rc = gpg_error_from_syserror ();
++              goto leave_gost;
++            }
++
++          rc = gcry_mpi_print (GCRYMPI_FMT_USG, kek_buf, kek_len, NULL,
++                               shared_mpi);
++          if (rc) goto leave_gost;
++
++          if (DBG_CRYPTO)
++            log_printhex ("KEK (raw): ", kek_buf, kek_len);
++        }
++      else
++        {
++          if (DBG_CRYPTO)
++            log_printmpi ("GOST shared point: ", shared_mpi);
++
++          rc = gost_vko (shared_mpi, digest_algo, digest_params,
++                         &kek_buf, &kek_len);
++          if (rc) goto leave_gost;
++        }
++
++	  const char *sbox = NULL;
++	  gcry_sexp_t sbox_val = gcry_sexp_find_token (the_enc_val, "b", 0);
++	  if (sbox_val)
++        sbox = gcry_sexp_nth_string (sbox_val, 1);
++      if (!sbox)
++        {
++          rc = gpg_error (GPG_ERR_INV_SEXP);
++          goto leave_gost;
++        }
++      else if (DBG_CRYPTO)
++        log_debug ("KEK S-box: %s\n", sbox);
++
++      enum gcry_cipher_algos cipher_algo;
++      enum gcry_mac_algos mac_algo;
++      if (0 == strcmp (sbox, "1.2.643.2.2.31.1") ||
++          0 == strcmp (sbox, "1.2.643.2.2.31.2") ||
++          0 == strcmp (sbox, "1.2.643.2.2.31.3") ||
++          0 == strcmp (sbox, "1.2.643.2.2.31.4") ||
++          0 == strcmp (sbox, "1.2.643.7.1.2.5.1.1"))
++        {
++          cipher_algo = GCRY_CIPHER_GOST28147;
++          mac_algo = GCRY_MAC_GOST28147_IMIT;
++        }
++      else
++        {
++          rc = gpg_error (GPG_ERR_UNSUPPORTED_ALGORITHM);
++          goto leave_gost;
++        }
++
++      const char *ukm_buf = NULL;
++      size_t ukm_len;
++      gcry_sexp_t u_val = gcry_sexp_find_token (the_enc_val, "u", 0);
++      if (u_val)
++        ukm_buf = gcry_sexp_nth_data (u_val, 1, &ukm_len);
++      if (!ukm_buf)
++        {
++          rc = gpg_error (GPG_ERR_INV_SEXP);
++          goto leave_gost;
++        }
++      else if (DBG_CRYPTO)
++        log_printhex ("UKM: ", ukm_buf, ukm_len);
++
++      /* UKM here is an opaque value --- see encrypt_dek() for details. */
++      ukm = gcry_mpi_new (ukm_len * 8);
++      ukm = gcry_mpi_set_opaque_copy (ukm, ukm_buf, ukm_len * 8);
++      if (!ukm) goto leave_gost;
++
++      rc = gost_cpdiversify_key (&kek, cipher_algo, sbox, kek_buf,
++                                 kek_len, ukm);
++      if (rc) goto leave_gost;
++
++      if (DBG_CRYPTO)
++        log_printmpi ("KEK: ", kek);
++
++      gcry_sexp_t k_val = gcry_sexp_find_token (the_enc_val, "k", 0);
++      gcry_sexp_t m_val = gcry_sexp_find_token (the_enc_val, "m", 0);
++      if (k_val && m_val)
++        {
++          size_t wrapped_key_len;
++          const char *wrapped_key_buf =
++            gcry_sexp_nth_data (k_val, 1, &wrapped_key_len);
++
++          size_t mac_len;
++          const char *mac_buf =
++            gcry_sexp_nth_data (m_val, 1, &mac_len);
++
++          if (!wrapped_key_buf || !mac_buf)
++            {
++              rc = gpg_error (GPG_ERR_INV_SEXP);
++              goto leave_gost;
++            }
++
++          if (DBG_CRYPTO)
++            {
++              log_printhex ("Wrapped DEK: ", wrapped_key_buf,
++                            wrapped_key_len);
++              log_printhex ("Wrapped DEK MAC: ", mac_buf,
++                            mac_len);
++            }
++
++          wrapped_buf = xtrymalloc (wrapped_key_len + mac_len);
++          if (!wrapped_buf)
++            {
++              gpg_error_from_syserror ();
++              goto leave_gost;
++            }
++
++          memcpy (wrapped_buf, wrapped_key_buf, wrapped_key_len);
++          memcpy (wrapped_buf + wrapped_key_len, mac_buf, mac_len);
++
++          rc = gost_keyunwrap (&decoded, cipher_algo, sbox,
++                               mac_algo, sbox,
++                               wrapped_buf, wrapped_key_len + mac_len,
++                               ukm, kek);
++        }
++      else
++        {
++          rc = gpg_error (GPG_ERR_INV_SEXP);
++          goto leave_gost;
++        }
++
++      if (rc) goto leave_gost;
++
++	  xfree (seskey);
++      seskey = NULL;
++
++      unsigned int seskey_blen;
++      byte *_seskey = gcry_mpi_get_opaque (decoded, &seskey_blen);
++      seskeylen = (seskey_blen + 7)/8;
++      if (_seskey)
++        seskey = xtrymalloc (seskeylen);
++      if (seskey)
++        memcpy (seskey, _seskey, seskeylen);
++
++      if (!seskey)
++          rc = gpg_error_from_syserror ();
++      if (rc) goto leave_gost;
++
++	  if (DBG_CRYPTO)
++		log_printhex ("Unwrapped DEK:", seskey, seskeylen);
++
++    leave_gost:
++      xfree (kek_buf);
++      gcry_mpi_release (kek);
++      gcry_mpi_release (ukm);
++      xfree (wrapped_buf);
++      xfree (digest);
++      xfree (curve);
++	}
++  else if (seskeylen == 32 || seskeylen == 24 || seskeylen == 16)
+     {
+       /* Smells like an AES-128, 3-DES, or AES-256 key.  This might
+        * happen because a SC has already done the unpacking.  A better
+@@ -114,6 +371,8 @@ prepare_decryption (ctrl_t ctrl, const char *hexkeygrip, const char *desc,
+         }
+     }
+ 
++  if (rc) goto leave;
++
+   if (DBG_CRYPTO)
+     log_printhex ("session key:", seskey+n, seskeylen-n);
+ 
+@@ -133,14 +392,38 @@ prepare_decryption (ctrl_t ctrl, const char *hexkeygrip, const char *desc,
+     }
+   if (rc)
+     {
+-      log_error("key setup failed: %s\n", gpg_strerror(rc) );
++      log_error("key setup failed: %s\n", gpg_strerror (rc));
+       goto leave;
+     }
+ 
++  if (parm->sbox_oid)
++	{
++	  char *sbox_buf = xtrystrdup (parm->sbox_oid);
++	  if (!sbox_buf)
++		{
++		  rc = gpg_error (GPG_ERR_ENOMEM);
++		  goto leave;
++		}
++	  if (DBG_CRYPTO)
++		log_debug ("data S-Box: %s\n", sbox_buf);
++	  rc = gcry_cipher_ctl (parm->hd, GCRYCTL_SET_SBOX,
++							sbox_buf, strlen (sbox_buf));
++	  xfree (sbox_buf);
++	  if (rc)
++		{
++		  log_error("s-box setup failed: %s\n", gpg_strerror (rc));
++			  goto leave;
++		}
++	}
++
+   gcry_cipher_setiv (parm->hd, parm->iv, parm->ivlen);
+ 
+  leave:
+   xfree (seskey);
++  gcry_sexp_release (enc_val_s);
++  gcry_mpi_release (shared_mpi);
++  gcry_mpi_release (decoded);
++
+   return rc;
+ }
+ 
+@@ -374,6 +657,8 @@ gpgsm_decrypt (ctrl_t ctrl, int in_fd, estream_t out_fp)
+ 
+           audit_log_i (ctrl->audit, AUDIT_DATA_CIPHER_ALGO, algo);
+           dfparm.algo = algo;
++		  dfparm.sbox_oid =
++			ksba_cms_get_content_oid (cms, 3/* encryption S-Box algo*/);
+           dfparm.mode = mode;
+           dfparm.blklen = gcry_cipher_get_algo_blklen (algo);
+           if (dfparm.blklen > sizeof (dfparm.helpblock))
+@@ -478,7 +763,7 @@ gpgsm_decrypt (ctrl_t ctrl, int in_fd, estream_t out_fp)
+ 
+                   {
+                     unsigned int nbits;
+-                    int pk_algo = gpgsm_get_key_algo_info (cert, &nbits);
++                    int pk_algo = gpgsm_get_key_algo_info (cert, &nbits, NULL, NULL, NULL);
+ 
+                     /* Check compliance.  */
+                     if (!gnupg_pk_is_allowed (opt.compliance,
+@@ -590,31 +875,68 @@ gpgsm_decrypt (ctrl_t ctrl, int in_fd, estream_t out_fp)
+       else if (stopreason == KSBA_SR_END_DATA)
+         {
+           ksba_writer_set_filter (writer, NULL, NULL);
+-          if (dfparm.any_data)
+-            { /* write the last block with padding removed */
+-              int i, npadding = dfparm.lastblock[dfparm.blklen-1];
+-              if (!npadding || npadding > dfparm.blklen)
+-                {
+-                  log_error ("invalid padding with value %d\n", npadding);
+-                  rc = gpg_error (GPG_ERR_INV_DATA);
+-                  goto leave;
++          if (dfparm.any_data || dfparm.helpblocklen)
++            {
++			  size_t lastlen;
++			  int npadding = 0;
++
++			  if (dfparm.helpblocklen)
++				{
++				  gcry_cipher_decrypt (dfparm.hd,
++									   dfparm.lastblock +
++									     (dfparm.any_data ?
++										    dfparm.blklen : 0),
++									   dfparm.blklen,
++									   dfparm.helpblock,
++									   dfparm.blklen);
++				  if (dfparm.any_data)
++					lastlen = dfparm.blklen + dfparm.helpblocklen;
++				  else
++					lastlen = dfparm.helpblocklen;
++				}
++			  else
++				{
++                  switch (dfparm.mode)
++                    { /* No padding is used for these modes */
++                    case GCRY_CIPHER_MODE_CFB:
++                    case GCRY_CIPHER_MODE_OFB:
++                    case GCRY_CIPHER_MODE_CTR:
++                      npadding = 0;
++                      break;
++                    default:
++                      /* write the last block with padding removed */
++                      npadding = dfparm.lastblock[dfparm.blklen-1];
++                      if (!npadding || npadding > dfparm.blklen)
++                        {
++                          log_error ("invalid padding with value %d\n", npadding);
++                          rc = gpg_error (GPG_ERR_INV_DATA);
++                          goto leave;
++                        }
++                    }
++
++                  lastlen = dfparm.blklen - npadding;
+                 }
++
+               rc = ksba_writer_write (writer,
+                                       dfparm.lastblock,
+-                                      dfparm.blklen - npadding);
++                                      lastlen);
+               if (rc)
+                 goto leave;
+ 
+-              for (i=dfparm.blklen - npadding; i < dfparm.blklen; i++)
+-                {
+-                  if (dfparm.lastblock[i] != npadding)
+-                    {
+-                      log_error ("inconsistent padding\n");
+-                      rc = gpg_error (GPG_ERR_INV_DATA);
+-                      goto leave;
+-                    }
+-                }
+-            }
++			  if (npadding)
++				{
++				  int i;
++				  for (i=dfparm.blklen - npadding; i < dfparm.blklen; i++)
++					{
++					  if (dfparm.lastblock[i] != npadding)
++						{
++						  log_error ("inconsistent padding\n");
++						  rc = gpg_error (GPG_ERR_INV_DATA);
++						  goto leave;
++						}
++					}
++				}
++			}
+         }
+ 
+     }
+diff --git a/sm/encrypt.c b/sm/encrypt.c
+index 6213a6604..970572c54 100644
+--- a/sm/encrypt.c
++++ b/sm/encrypt.c
+@@ -34,11 +34,15 @@
+ #include "keydb.h"
+ #include "../common/i18n.h"
+ #include "../common/compliance.h"
++#include "../common/util.h"
++#include "../common/gost-util.h"
+ 
+ 
+ struct dek_s {
+   const char *algoid;
++  const char *sbox_oid;
+   int algo;
++  int mode;
+   gcry_cipher_hd_t chd;
+   char key[32];
+   int keylen;
+@@ -79,6 +83,10 @@ init_dek (DEK dek)
+       return gpg_error (GPG_ERR_UNSUPPORTED_ALGORITHM);
+     }
+ 
++  /* Store the mode for use in encrypt_cb() to decide about
++     the padding. */
++  dek->mode = mode;
++
+   /* Extra check for algorithms we consider to be too weak for
+      encryption, although we support them for decryption.  Note that
+      there is another check below discriminating on the key length. */
+@@ -126,22 +134,39 @@ init_dek (DEK dek)
+   if (rc)
+     {
+       log_error ("failed to set the key: %s\n", gpg_strerror (rc));
+-      gcry_cipher_close (dek->chd);
+-      dek->chd = NULL;
+-      return rc;
++      goto leave;
+     }
+ 
++  /* Set the S-box if configured. */
++  if (dek->sbox_oid)
++    rc = gcry_cipher_ctl (dek->chd, GCRYCTL_SET_SBOX,
++                          /* It's known that SET_SBOX doesn't modify
++                             its args (FIXME). */
++                          (char *) dek->sbox_oid,
++                          strlen (dek->sbox_oid));
++
++  if (rc)
++	{
++	  log_error("s-box setup failed: %s\n", gpg_strerror (rc));
++	  goto leave;
++	}
++
+   gcry_create_nonce (dek->iv, dek->ivlen);
+   rc = gcry_cipher_setiv (dek->chd, dek->iv, dek->ivlen);
+   if (rc)
+     {
+       log_error ("failed to set the IV: %s\n", gpg_strerror (rc));
+-      gcry_cipher_close (dek->chd);
+-      dek->chd = NULL;
+-      return rc;
++      goto leave;
+     }
+ 
+-  return 0;
++ leave:
++  if (rc && dek->chd)
++	{
++	  gcry_cipher_close (dek->chd);
++	  dek->chd = NULL;
++	}
++
++  return rc;
+ }
+ 
+ 
+@@ -149,18 +174,31 @@ static int
+ encode_session_key (DEK dek, gcry_sexp_t * r_data)
+ {
+   gcry_sexp_t data;
+-  char *p;
+   int rc;
+ 
+-  p = xtrymalloc (64 + 2 * dek->keylen);
+-  if (!p)
+-    return gpg_error_from_syserror ();
+-  strcpy (p, "(data\n (flags pkcs1)\n (value #");
+-  bin2hex (dek->key, dek->keylen, p + strlen (p));
+-  strcat (p, "#))\n");
+-  rc = gcry_sexp_sscan (&data, NULL, p, strlen (p));
+-  xfree (p);
+-  *r_data = data;
++  switch (dek->algo)
++	{
++	case GCRY_CIPHER_GOST28147:
++	  {
++        rc = GPG_ERR_BUG;
++	  }
++	  break;
++	default:
++	  {
++		char *p = xtrymalloc (64 + 2 * dek->keylen);
++		if (!p)
++		  return gpg_error_from_syserror ();
++		strcpy (p, "(data\n (flags pkcs1)\n (value #");
++		bin2hex (dek->key, dek->keylen, p + strlen (p));
++		strcat (p, "#))\n");
++		rc = gcry_sexp_sscan (&data, NULL, p, strlen (p));
++		xfree (p);
++	  }
++	  break;
++	}
++
++  if (!rc)
++	*r_data = data;
+   return rc;
+ }
+ 
+@@ -170,7 +208,10 @@ encode_session_key (DEK dek, gcry_sexp_t * r_data)
+ static int
+ encrypt_dek (const DEK dek, ksba_cert_t cert, unsigned char **encval)
+ {
+-  gcry_sexp_t s_ciph, s_data, s_pkey;
++  gcry_sexp_t s_ciph = NULL, s_data = NULL, s_pkey = NULL;
++  char *algo_oidstr = NULL;
++  char *curve_oidstr = NULL;
++  char *digest_oidstr = NULL;
+   int rc;
+   ksba_sexp_t buf;
+   size_t len;
+@@ -198,26 +239,179 @@ encrypt_dek (const DEK dek, ksba_cert_t cert, unsigned char **encval)
+       return rc;
+     }
+ 
++  unsigned int nbits;
++  int pk_algo = gpgsm_get_key_algo_info (cert, &nbits, &algo_oidstr,
++                                         &curve_oidstr, &digest_oidstr);
++
+   /* Put the encoded cleartext into a simple list. */
+   s_data = NULL; /* (avoid compiler warning) */
+-  rc = encode_session_key (dek, &s_data);
+-  if (rc)
++
++  switch (pk_algo)
+     {
+-      log_error ("encode_session_key failed: %s\n", gpg_strerror (rc));
+-      return rc;
++    case PUBKEY_ALGO_ECDH:
++      {
++        gcry_mpi_t ukm = NULL;
++        unsigned int ukm_blen = 64;
++        gcry_mpi_t privk = gcry_mpi_snew (nbits);
++        if (!privk)
++          {
++            rc = gpg_error_from_syserror ();
++            goto exit_ecdh;
++          }
++        gcry_mpi_randomize (privk, nbits-1, GCRY_STRONG_RANDOM);
++
++        if (openpgp_oidstr_is_gost (algo_oidstr))
++          {
++            rc = gost_generate_ukm (ukm_blen, &ukm);
++            if (rc) goto exit_ecdh;
++
++            if (DBG_CRYPTO)
++              log_printmpi ("UKM: ", ukm);
++
++            gcry_mpi_lshift (privk, privk, ukm_blen);
++            gcry_mpi_add (privk, privk, ukm);
++            rc = gcry_sexp_build (&s_data, NULL, "(data(flags gost)(value %m)(salt-length %u))", privk, ukm_blen);
++          }
++        else
++          rc = gcry_sexp_build (&s_data, NULL, "%m", privk);
++
++        if (rc) goto exit_ecdh;
++
++        rc = gcry_pk_encrypt (&s_ciph, s_data, s_pkey);
++        if (rc) goto exit_ecdh;
++
++        if (openpgp_oidstr_is_gost (algo_oidstr))
++          {
++            gcry_mpi_t key = NULL;
++            gcry_mpi_t kek = NULL;
++            gcry_mpi_t shared = get_mpi_from_sexp (s_ciph, "s", GCRYMPI_FMT_USG);
++            gcry_mpi_t public = get_mpi_from_sexp (s_ciph, "e", GCRYMPI_FMT_USG);
++            if (!shared || !public)
++              {
++                rc = GPG_ERR_BAD_DATA;
++                goto exit_gost;
++              }
++
++            if (DBG_CRYPTO)
++              log_printmpi ("Shared point: ", shared);
++
++            rc = gcry_mpi_scan (&key, GCRYMPI_FMT_USG, dek->key,
++                                dek->keylen, NULL);
++            if (rc) goto exit_gost;
++
++            enum gcry_md_algos digest_algo;
++            enum gcry_cipher_algos cipher_algo;
++            enum gcry_mac_algos mac_algo;
++            const char *sbox = NULL;
++            if (0 == strcmp (algo_oidstr, "1.2.643.2.2.19"))
++              {
++                digest_algo = GCRY_MD_GOSTR3411_CP;
++                cipher_algo = GCRY_CIPHER_GOST28147;
++                mac_algo = GCRY_MAC_GOST28147_IMIT;
++                sbox = "1.2.643.2.2.31.1";
++              }
++            else if (0 == strcmp (algo_oidstr, "1.2.643.7.1.1.1.1") ||
++                     0 == strcmp (algo_oidstr, "1.2.643.7.1.1.1.2"))
++              {
++                digest_algo = GCRY_MD_STRIBOG256;
++                cipher_algo = GCRY_CIPHER_GOST28147;
++                mac_algo = GCRY_MAC_GOST28147_IMIT;
++                sbox = "1.2.643.7.1.2.5.1.1";
++              }
++            else
++              {
++                rc = GPG_ERR_UNSUPPORTED_ALGORITHM;
++                goto exit_gost;
++              }
++
++            if (DBG_CRYPTO)
++              {
++                log_debug ("KEK digest: %s\n", gcry_md_algo_name (digest_algo));
++                log_debug ("KEK S-box: %s\n", sbox);
++              }
++
++            unsigned char *kek_buf = NULL;
++            size_t kek_len;
++            rc = gost_vko (shared, digest_algo, NULL, &kek_buf, &kek_len);
++            if (rc) goto exit_gost;
++
++            if (DBG_CRYPTO)
++                log_printhex ("KEK (raw): ", kek_buf, kek_len);
++
++            /* Opaquefy the UKM value in order to properly store a value
++               with leading zeros. */
++            size_t ukm_len = (ukm_blen + 7)/8;
++            unsigned char *ukm_buf = xtrymalloc (ukm_len);
++            if (!ukm_buf)
++              {
++                rc = gpg_error_from_syserror ();
++                goto exit_gost;
++              }
++            memset (ukm_buf, 0, ukm_len);
++            size_t ukm_wrt;
++            rc = gcry_mpi_print (GCRYMPI_FMT_USG, ukm_buf, ukm_len, &ukm_wrt, ukm);
++            if (ukm_wrt < ukm_len)
++              {
++                memmove (ukm_buf + (ukm_len - ukm_wrt), ukm_buf, ukm_wrt);
++                memset (ukm_buf, 0, ukm_len - ukm_wrt);
++              }
++            ukm = gcry_mpi_set_opaque (ukm, ukm_buf, ukm_blen);
++
++            rc = gost_cpdiversify_key (&kek, cipher_algo, sbox,
++                                       kek_buf, kek_len, ukm);
++            if (rc) goto exit_gost;
++
++            if (DBG_CRYPTO)
++              log_printmpi ("KEK: ", kek);
++
++            gcry_mpi_t wrapped = NULL;
++            rc = gost_keywrap (&wrapped, cipher_algo, sbox, mac_algo, sbox,
++                               key, ukm, kek);
++            if (rc) goto exit_gost;
++
++            if (DBG_CRYPTO)
++              log_printmpi ("Wrapped DEK: ", wrapped);
++
++            gcry_sexp_release (s_ciph);
++            rc = gcry_sexp_build (&s_ciph, NULL, "(enc-val(gost(q %m)(ukm %m)(s %m)(algo %s)(curve %s)(digest %s)(sbox %s)))", public, ukm, wrapped, algo_oidstr, curve_oidstr, digest_oidstr, sbox);
++
++          exit_gost:
++            gcry_mpi_release (shared);
++            gcry_mpi_release (public);
++            gcry_mpi_release (kek);
++            gcry_mpi_release (key);
++          }
++        else
++          {
++            /* TODO: ECDH encryption */
++            rc = GPG_ERR_UNSUPPORTED_ALGORITHM;
++          }
++
++      exit_ecdh:
++        gcry_mpi_release (ukm);
++        gcry_mpi_release (privk);
++      }
++      break;
++    default:
++      rc = encode_session_key (dek, &s_data);
++      if (!rc)
++        rc = gcry_pk_encrypt (&s_ciph, s_data, s_pkey);
+     }
+ 
+-  /* pass it to libgcrypt */
+-  rc = gcry_pk_encrypt (&s_ciph, s_data, s_pkey);
++  if (!rc)
++    rc = make_canon_sexp (s_ciph, encval, NULL);
++
++  if (rc)
++    log_error ("encode_session_key failed: %s\n", gpg_strerror (rc));
++
++  gcry_sexp_release (s_ciph);
+   gcry_sexp_release (s_data);
+   gcry_sexp_release (s_pkey);
+ 
+-  /* Reformat it. */
+-  if (!rc)
+-    {
+-      rc = make_canon_sexp (s_ciph, encval, NULL);
+-      gcry_sexp_release (s_ciph);
+-    }
++  xfree (algo_oidstr);
++  xfree (curve_oidstr);
++  xfree (digest_oidstr);
++
+   return rc;
+ }
+ 
+@@ -271,15 +465,42 @@ encrypt_cb (void *cb_value, char *buffer, size_t count, size_t *nread)
+       *nread = n;
+       /* Who cares about cycles, take the easy way and shift the buffer */
+       parm->buflen -= n;
+-      memmove (parm->buffer, parm->buffer+n, parm->buflen);
++      if (parm->buflen)
++        memmove (parm->buffer, parm->buffer+n, parm->buflen);
++      else if (parm->eof_seen)
++        {
++          switch (parm->dek->mode)
++            { /* Set the 'ready' flag because no padding is required
++                 for these modes. */
++            case GCRY_CIPHER_MODE_CFB:
++            case GCRY_CIPHER_MODE_OFB:
++            case GCRY_CIPHER_MODE_CTR:
++              parm->ready = 1;
++              break;
++            default:
++              break;
++            }
++        }
+     }
+   else if (parm->eof_seen)
+     { /* no complete block but eof: add padding */
+       /* fixme: we should try to do this also in the above code path */
+-      int i, npad = blklen - (parm->buflen % blklen);
+-      p = parm->buffer;
+-      for (n=parm->buflen, i=0; n < parm->bufsize && i < npad; n++, i++)
+-        p[n] = npad;
++      n = parm->buflen;
++      switch (parm->dek->mode)
++        { /* No padding is required for these modes */
++        case GCRY_CIPHER_MODE_CFB:
++        case GCRY_CIPHER_MODE_OFB:
++        case GCRY_CIPHER_MODE_CTR:
++          break;
++        default:
++          {
++            int i, npad = blklen - (parm->buflen % blklen);
++            p = parm->buffer;
++            for (i=0; n < parm->bufsize && i < npad; n++, i++)
++              p[n] = npad;
++          }
++          break;
++        }
+       gcry_cipher_encrypt (parm->dek->chd, buffer, n, parm->buffer, n);
+       *nread = n;
+       parm->ready = 1;
+@@ -430,15 +651,67 @@ gpgsm_encrypt (ctrl_t ctrl, certlist_t recplist, int data_fd, estream_t out_fp)
+       goto leave;
+     }
+ 
+-  /* Create a session key */
+   dek = xtrycalloc_secure (1, sizeof *dek);
+   if (!dek)
+-    rc = out_of_core ();
+-  else
+-  {
++	{
++	  rc = out_of_core ();
++	  goto leave;
++	}
++
++  dek->algoid = NULL;
++  for (recpno = 0, cl = recplist; cl; recpno++, cl = cl->next)
++    {
++      char *oidstr = NULL;
++      int pk_algo = gpgsm_get_key_algo_info (cl->cert, NULL, &oidstr, NULL,
++                                             NULL);
++	  switch (pk_algo)
++		{
++		case PUBKEY_ALGO_ECDH:
++		  if (openpgp_oidstr_is_gost (oidstr))
++			{
++              if (!dek->algoid)
++                dek->algoid = "1.2.643.2.2.21";
++              else if (0 == strcmp (dek->algoid, "1.2.643.2.2.21"))
++                break;
++              else
++                {
++                  rc = gpg_error (GPG_ERR_CIPHER_ALGO);
++                  goto dek_leave;
++                }
++
++              if (!dek->sbox_oid)
++                {
++                  if (0 == strcmp (oidstr, "1.2.643.7.1.1.1.1") ||
++                      0 == strcmp (oidstr, "1.2.643.7.1.1.1.2"))
++                    {
++                      /* GOST 2012 */
++                      dek->sbox_oid = "1.2.643.7.1.2.5.1.1";
++                    }
++                  else if (0 == strcmp (oidstr, "1.2.643.2.2.19"))
++                    {
++                      /* GOST 2001 */
++                      dek->sbox_oid = "1.2.643.2.2.31.1";
++                    }
++                  else
++                    {
++                      rc = gpg_error (GPG_ERR_UNSUPPORTED_ALGORITHM);
++                      goto dek_leave;
++                    }
++                }
++			}
++		  break;
++		}
++
++    dek_leave:
++      xfree (oidstr);
++      if (rc) goto leave;
++	}
++
++  if (!dek->algoid)
+     dek->algoid = opt.def_cipher_algoid;
+-    rc = init_dek (dek);
+-  }
++
++  /* Create a session key */
++  rc = init_dek (dek);
+   if (rc)
+     {
+       log_error ("failed to create the session key: %s\n",
+@@ -446,7 +719,14 @@ gpgsm_encrypt (ctrl_t ctrl, certlist_t recplist, int data_fd, estream_t out_fp)
+       goto leave;
+     }
+ 
+-  err = ksba_cms_set_content_enc_algo (cms, dek->algoid, dek->iv, dek->ivlen);
++  err = ksba_cms_set_content_enc_algo (cms,
++                                       /* Use S-box OID to identify both
++                                          the algorithm and the S-box
++                                          (FIXME). */
++                                       dek->sbox_oid ?
++                                         dek->sbox_oid :
++                                         dek->algoid,
++                                       dek->iv, dek->ivlen);
+   if (err)
+     {
+       log_error ("ksba_cms_set_content_enc_algo failed: %s\n",
+@@ -476,11 +756,12 @@ gpgsm_encrypt (ctrl_t ctrl, certlist_t recplist, int data_fd, estream_t out_fp)
+     {
+       unsigned char *encval;
+       unsigned int nbits;
++      char *curve_oidstr = NULL;
+       int pk_algo;
+ 
+       /* Check compliance.  */
+-      pk_algo = gpgsm_get_key_algo_info (cl->cert, &nbits);
+-      if (!gnupg_pk_is_compliant (opt.compliance, pk_algo, NULL, nbits, NULL))
++      pk_algo = gpgsm_get_key_algo_info (cl->cert, &nbits, NULL, &curve_oidstr, NULL);
++      if (!gnupg_pk_is_compliant (opt.compliance, pk_algo, NULL, nbits, curve_oidstr))
+         {
+           char  kidstr[10+1];
+ 
+@@ -492,10 +773,8 @@ gpgsm_encrypt (ctrl_t ctrl, certlist_t recplist, int data_fd, estream_t out_fp)
+                     gnupg_compliance_option_string (opt.compliance));
+         }
+ 
+-      /* Fixme: When adding ECC we need to provide the curvename and
+-       * the key to gnupg_pk_is_compliant.  */
+       if (compliant
+-          && !gnupg_pk_is_compliant (CO_DE_VS, pk_algo, NULL, nbits, NULL))
++          && !gnupg_pk_is_compliant (CO_DE_VS, pk_algo, NULL, nbits, curve_oidstr))
+         compliant = 0;
+ 
+       rc = encrypt_dek (dek, cl->cert, &encval);
+@@ -504,7 +783,7 @@ gpgsm_encrypt (ctrl_t ctrl, certlist_t recplist, int data_fd, estream_t out_fp)
+           audit_log_cert (ctrl->audit, AUDIT_ENCRYPTED_TO, cl->cert, rc);
+           log_error ("encryption failed for recipient no. %d: %s\n",
+                      recpno, gpg_strerror (rc));
+-          goto leave;
++          goto setval_leave;
+         }
+ 
+       err = ksba_cms_add_recipient (cms, cl->cert);
+@@ -515,7 +794,7 @@ gpgsm_encrypt (ctrl_t ctrl, certlist_t recplist, int data_fd, estream_t out_fp)
+                      gpg_strerror (err));
+           rc = err;
+           xfree (encval);
+-          goto leave;
++          goto setval_leave;
+         }
+ 
+       err = ksba_cms_set_enc_val (cms, recpno, encval);
+@@ -526,8 +805,12 @@ gpgsm_encrypt (ctrl_t ctrl, certlist_t recplist, int data_fd, estream_t out_fp)
+           log_error ("ksba_cms_set_enc_val failed: %s\n",
+                      gpg_strerror (err));
+           rc = err;
+-          goto leave;
++          goto setval_leave;
+         }
++
++    setval_leave:
++      xfree (curve_oidstr);
++      if (rc) goto leave;
+     }
+ 
+   if (compliant)
+diff --git a/sm/fingerprint.c b/sm/fingerprint.c
+index fbcec5883..33686ac89 100644
+--- a/sm/fingerprint.c
++++ b/sm/fingerprint.c
+@@ -221,15 +221,14 @@ gpgsm_get_keygrip_hexstring (ksba_cert_t cert)
+ /* Return the PK algorithm used by CERT as well as the length in bits
+    of the public key at NBITS. */
+ int
+-gpgsm_get_key_algo_info (ksba_cert_t cert, unsigned int *nbits)
++gpgsm_get_key_algo_info (ksba_cert_t cert, unsigned int *nbits,
++                         char **r_oid, char **r_curve_oid,
++                         char **r_digest_oid)
+ {
+   gcry_sexp_t s_pkey;
+   int rc;
+   ksba_sexp_t p;
+   size_t n;
+-  gcry_sexp_t l1, l2;
+-  const char *name;
+-  char namebuf[128];
+ 
+   if (nbits)
+     *nbits = 0;
+@@ -251,29 +250,10 @@ gpgsm_get_key_algo_info (ksba_cert_t cert, unsigned int *nbits)
+   if (nbits)
+     *nbits = gcry_pk_get_nbits (s_pkey);
+ 
+-  /* Breaking the algorithm out of the S-exp is a bit of a challenge ... */
+-  l1 = gcry_sexp_find_token (s_pkey, "public-key", 0);
+-  if (!l1)
+-    {
+-      gcry_sexp_release (s_pkey);
+-      return 0;
+-    }
+-  l2 = gcry_sexp_cadr (l1);
+-  gcry_sexp_release (l1);
+-  l1 = l2;
+-  name = gcry_sexp_nth_data (l1, 0, &n);
+-  if (name)
+-    {
+-      if (n > sizeof namebuf -1)
+-        n = sizeof namebuf -1;
+-      memcpy (namebuf, name, n);
+-      namebuf[n] = 0;
+-    }
+-  else
+-    *namebuf = 0;
+-  gcry_sexp_release (l1);
++  int algo = get_pk_info_from_key (s_pkey, r_oid, r_curve_oid, r_digest_oid);
++
+   gcry_sexp_release (s_pkey);
+-  return gcry_pk_map_name (namebuf);
++  return algo;
+ }
+ 
+ 
+diff --git a/sm/gpgsm.c b/sm/gpgsm.c
+index a01a7c873..884c863ae 100644
+--- a/sm/gpgsm.c
++++ b/sm/gpgsm.c
+@@ -498,6 +498,7 @@ our_cipher_test_algo (int algo)
+     case GCRY_CIPHER_CAMELLIA128:
+     case GCRY_CIPHER_CAMELLIA192:
+     case GCRY_CIPHER_CAMELLIA256:
++    case GCRY_CIPHER_GOST28147:
+       return gcry_cipher_test_algo (algo);
+     default:
+       return 1;
+@@ -518,6 +519,9 @@ our_md_test_algo (int algo)
+     case GCRY_MD_SHA384:
+     case GCRY_MD_SHA512:
+     case GCRY_MD_WHIRLPOOL:
++    case GCRY_MD_GOSTR3411_94:
++    case GCRY_MD_STRIBOG256:
++    case GCRY_MD_STRIBOG512:
+       return gcry_md_test_algo (algo);
+     default:
+       return 1;
+@@ -589,7 +593,7 @@ my_strusage( int level )
+       break;
+     case 35:
+       if (!pubkeys)
+-        pubkeys = build_list ("Pubkey: ", gcry_pk_algo_name,
++        pubkeys = build_list ("Pubkey: ", gnupg_pk_algo_name,
+                               our_pk_test_algo );
+       p = pubkeys;
+       break;
+diff --git a/sm/gpgsm.h b/sm/gpgsm.h
+index addd857b1..e6b0d2453 100644
+--- a/sm/gpgsm.h
++++ b/sm/gpgsm.h
+@@ -261,7 +261,9 @@ unsigned long gpgsm_get_short_fingerprint (ksba_cert_t cert,
+                                            unsigned long *r_high);
+ unsigned char *gpgsm_get_keygrip (ksba_cert_t cert, unsigned char *array);
+ char *gpgsm_get_keygrip_hexstring (ksba_cert_t cert);
+-int  gpgsm_get_key_algo_info (ksba_cert_t cert, unsigned int *nbits);
++int  gpgsm_get_key_algo_info (ksba_cert_t cert, unsigned int *nbits,
++                              char **r_oid, char **r_curve_oid,
++                              char **r_digest_oid);
+ char *gpgsm_get_certid (ksba_cert_t cert);
+ 
+ 
+diff --git a/sm/keylist.c b/sm/keylist.c
+index 6efc6bdef..620ed3739 100644
+--- a/sm/keylist.c
++++ b/sm/keylist.c
+@@ -478,7 +478,7 @@ list_cert_colon (ctrl_t ctrl, ksba_cert_t cert, unsigned int validity,
+   if (*truststring)
+     es_fputs (truststring, fp);
+ 
+-  algo = gpgsm_get_key_algo_info (cert, &nbits);
++  algo = gpgsm_get_key_algo_info (cert, &nbits, NULL, NULL, NULL);
+   es_fprintf (fp, ":%u:%d:%s:", nbits, algo, fpr+24);
+ 
+   ksba_cert_get_validity (cert, 0, t);
+@@ -800,7 +800,7 @@ list_cert_raw (ctrl_t ctrl, KEYDB_HANDLE hd,
+     const char *algoname;
+     unsigned int nbits;
+ 
+-    algoname = gcry_pk_algo_name (gpgsm_get_key_algo_info (cert, &nbits));
++    algoname = gcry_pk_algo_name (gpgsm_get_key_algo_info (cert, &nbits, NULL, NULL, NULL));
+     es_fprintf (fp, "      keyType: %u bit %s\n",
+                 nbits, algoname? algoname:"?");
+   }
+@@ -1160,7 +1160,7 @@ list_cert_std (ctrl_t ctrl, ksba_cert_t cert, estream_t fp, int have_secret,
+     const char *algoname;
+     unsigned int nbits;
+ 
+-    algoname = gcry_pk_algo_name (gpgsm_get_key_algo_info (cert, &nbits));
++    algoname = gcry_pk_algo_name (gpgsm_get_key_algo_info (cert, &nbits, NULL, NULL, NULL));
+     es_fprintf (fp, "     key type: %u bit %s\n",
+                 nbits, algoname? algoname:"?");
+   }
+diff --git a/sm/sign.c b/sm/sign.c
+index fd6ebe00c..9de39b8ad 100644
+--- a/sm/sign.c
++++ b/sm/sign.c
+@@ -437,18 +437,33 @@ gpgsm_sign (ctrl_t ctrl, certlist_t signerlist,
+     log_info ("user requested hash algorithm %d\n", opt.forced_digest_algo);
+   for (i=0, cl=signerlist; cl; cl = cl->next, i++)
+     {
+-      const char *oid;
++      const char *oid = NULL;
+ 
+       if (opt.forced_digest_algo)
+         {
+-          oid = NULL;
+           cl->hash_algo = opt.forced_digest_algo;
+         }
+       else
+         {
+-          oid = ksba_cert_get_digest_algo (cl->cert);
+-          cl->hash_algo = oid ? gcry_md_map_name (oid) : 0;
++          char *_oid = NULL;
++          gpgsm_get_key_algo_info (cl->cert, NULL, NULL, NULL, &_oid);
++          if (_oid)
++            {
++              /* GOST 3411-94 (1.2.643.2.2.9) may be specified
++                 by its S-box. */
++              if (0 == strcmp (_oid, "1.2.643.2.2.30.1"))
++                oid = "1.2.643.2.2.9";
++
++              cl->hash_algo = gcry_md_map_name (oid ? oid : _oid);
++              xfree (_oid);
++            }
++          else
++            {
++              oid = ksba_cert_get_digest_algo (cl->cert);
++              cl->hash_algo = oid ? gcry_md_map_name (oid) : 0;
++            }
+         }
++
+       switch (cl->hash_algo)
+         {
+         case GCRY_MD_SHA1:   oid = "1.3.14.3.2.26"; break;
+@@ -459,6 +474,10 @@ gpgsm_sign (ctrl_t ctrl, certlist_t signerlist,
+         case GCRY_MD_SHA512: oid = "2.16.840.1.101.3.4.2.3"; break;
+ /*         case GCRY_MD_WHIRLPOOL: oid = "No OID yet"; break; */
+ 
++        case GCRY_MD_GOSTR3411_94:
++        case GCRY_MD_GOSTR3411_CP: oid = "1.2.643.2.2.9"; break;
++        case GCRY_MD_STRIBOG256: oid = "1.2.643.7.1.1.2.2"; break;
++        case GCRY_MD_STRIBOG512: oid = "1.2.643.7.1.1.2.3"; break;
+         case GCRY_MD_MD5:  /* We don't want to use MD5.  */
+         case 0:            /* No algorithm found in cert.  */
+         default:           /* Other algorithms.  */
+@@ -484,7 +503,7 @@ gpgsm_sign (ctrl_t ctrl, certlist_t signerlist,
+ 
+       {
+         unsigned int nbits;
+-        int pk_algo = gpgsm_get_key_algo_info (cl->cert, &nbits);
++        int pk_algo = gpgsm_get_key_algo_info (cl->cert, &nbits, NULL, NULL, NULL);
+ 
+         if (! gnupg_pk_is_allowed (opt.compliance, PK_USE_SIGNING, pk_algo,
+                                    NULL, nbits, NULL))
+@@ -641,23 +660,46 @@ gpgsm_sign (ctrl_t ctrl, certlist_t signerlist,
+           rc = err;
+           goto leave;
+         }
+-    }
+ 
+-  /* We need to write at least a minimal list of our capabilities to
+-     try to convince some MUAs to use 3DES and not the crippled
+-     RC2. Our list is:
++      /* KSBA should not write duplicate capabilities. */
++      switch (cl->hash_algo)
++        {
++        case GCRY_MD_GOSTR3411_94:
++        case GCRY_MD_GOSTR3411_CP:
++          /* TODO: Param set A--D */
++          err = ksba_cms_add_smime_capability (cms, "1.2.643.2.2.9", NULL, 0);
++          goto finish_gost;
++        case GCRY_MD_STRIBOG256:
++          /* TODO: Param set Z */
++          err = ksba_cms_add_smime_capability (cms, "1.2.643.7.1.1.2.2", NULL, 0);
++          goto finish_gost;
++        case GCRY_MD_STRIBOG512:
++          /* TODO: Param set Z */
++          err = ksba_cms_add_smime_capability (cms, "1.2.643.7.1.1.2.3", NULL, 0);
++          goto finish_gost;
++        finish_gost:
++          if (!err)
++            err = ksba_cms_add_smime_capability (cms, "1.2.643.2.2.21", NULL, 0);
++          break;
++        default:
++          /* We need to write at least a minimal list of our capabilities to
++             try to convince some MUAs to use 3DES and not the crippled
++             RC2. Our list is:
++
++             aes128-CBC
++             des-EDE3-CBC
++          */
++          err = ksba_cms_add_smime_capability (cms, "2.16.840.1.101.3.4.1.2", NULL, 0);
++          if (!err)
++            err = ksba_cms_add_smime_capability (cms, "1.2.840.113549.3.7", NULL, 0);
++        }
+ 
+-        aes128-CBC
+-        des-EDE3-CBC
+-  */
+-  err = ksba_cms_add_smime_capability (cms, "2.16.840.1.101.3.4.1.2", NULL, 0);
+-  if (!err)
+-    err = ksba_cms_add_smime_capability (cms, "1.2.840.113549.3.7", NULL, 0);
+-  if (err)
+-    {
+-      log_error ("ksba_cms_add_smime_capability failed: %s\n",
+-                 gpg_strerror (err));
+-      goto leave;
++      if (err)
++        {
++          log_error ("ksba_cms_add_smime_capability failed: %s\n",
++                     gpg_strerror (err));
++          goto leave;
++        }
+     }
+ 
+ 
+@@ -778,7 +820,7 @@ gpgsm_sign (ctrl_t ctrl, certlist_t signerlist,
+                 }
+               rc = 0;
+               {
+-                int pkalgo = gpgsm_get_key_algo_info (cl->cert, NULL);
++				  int pkalgo = gpgsm_get_key_algo_info (cl->cert, NULL, NULL, NULL, NULL);
+                 buf = xtryasprintf ("%c %d %d 00 %s %s",
+                                     detached? 'D':'S',
+                                     pkalgo,
+diff --git a/sm/verify.c b/sm/verify.c
+index 10b3f4378..52fae9bcb 100644
+--- a/sm/verify.c
++++ b/sm/verify.c
+@@ -453,7 +453,7 @@ gpgsm_verify (ctrl_t ctrl, int in_fd, int data_fd, estream_t out_fp)
+       /* Check compliance.  */
+       {
+         unsigned int nbits;
+-        int pk_algo = gpgsm_get_key_algo_info (cert, &nbits);
++        int pk_algo = gpgsm_get_key_algo_info (cert, &nbits, NULL, NULL, NULL);
+ 
+         if (! gnupg_pk_is_allowed (opt.compliance, PK_USE_VERIFICATION,
+                                    pk_algo, NULL, nbits, NULL))

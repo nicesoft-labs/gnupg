@@ -1,0 +1,102 @@
+ dirmngr/crlcache.c | 31 ++++++++++++++++++++++++++++---
+ dirmngr/validate.c | 24 +++++++++++++++++++++++-
+ 2 files changed, 51 insertions(+), 4 deletions(-)
+
+diff --git a/dirmngr/crlcache.c b/dirmngr/crlcache.c
+index 52f49c093..ab1b891a9 100644
+--- a/dirmngr/crlcache.c
++++ b/dirmngr/crlcache.c
+@@ -1580,6 +1580,17 @@ finish_sig_check (ksba_crl_t crl, gcry_md_hd_t md, int algo,
+   gcry_sexp_t s_sig = NULL, s_hash = NULL, s_pkey = NULL;
+   unsigned int i;
+ 
++  int is_GOST = 0;
++  switch (algo)
++	{
++	case GCRY_MD_GOSTR3411_94:
++	case GCRY_MD_GOSTR3411_CP:
++	case GCRY_MD_STRIBOG256:
++	case GCRY_MD_STRIBOG512:
++	  is_GOST = 1;
++	  break;
++	}
++
+   /* This also stops debugging on the MD.  */
+   gcry_md_final (md);
+ 
+@@ -1624,9 +1635,23 @@ finish_sig_check (ksba_crl_t crl, gcry_md_hd_t md, int algo,
+   for (i = 0; *s && i < sizeof(algoname) - 1; s++, i++)
+     algoname[i] = ascii_tolower (*s);
+   algoname[i] = 0;
+-  err = gcry_sexp_build (&s_hash, NULL, "(data(flags pkcs1)(hash %s %b))",
+-                         algoname,
+-                         gcry_md_get_algo_dlen (algo), gcry_md_read (md, algo));
++
++  if (!is_GOST)
++	{
++	  err = gcry_sexp_build (&s_hash, NULL, "(data(flags pkcs1)(hash %s %b))",
++							 algoname,
++							 gcry_md_get_algo_dlen (algo),
++							 gcry_md_read (md, algo));
++	}
++  else
++	{
++	  size_t digestlen = gcry_md_get_algo_dlen (algo);
++	  unsigned char* digest = gcry_md_read (md, algo);
++	  flip_buffer (digest, digestlen);
++	  err = gcry_sexp_build (&s_hash, NULL, "(data(flags gost)(value %b))",
++							 digestlen, digest);
++	}
++
+   if (err)
+     {
+       log_error (_("creating S-expression failed: %s\n"), gcry_strerror (err));
+diff --git a/dirmngr/validate.c b/dirmngr/validate.c
+index 371852ba7..f767bb789 100644
+--- a/dirmngr/validate.c
++++ b/dirmngr/validate.c
+@@ -881,6 +881,8 @@ pk_algo_from_sexp (gcry_sexp_t pkey)
+     algo = GCRY_PK_DSA;
+   else if (n==13 && !memcmp (name, "ambiguous-rsa", 13))
+     algo = GCRY_PK_RSA;
++  else if (n==4 && !memcmp (name, "gost", 4))
++	algo = GCRY_PK_ECC;
+   else
+     algo = 0;
+   gcry_sexp_release (l2);
+@@ -914,6 +916,18 @@ check_cert_sig (ksba_cert_t issuer_cert, ksba_cert_t cert)
+       log_error (_("unknown hash algorithm '%s'\n"), algoid? algoid:"?");
+       return gpg_error (GPG_ERR_GENERAL);
+     }
++
++  int is_GOST = 0;
++  switch (algo)
++	{
++	case GCRY_MD_GOSTR3411_94:
++	case GCRY_MD_GOSTR3411_CP:
++	case GCRY_MD_STRIBOG256:
++	case GCRY_MD_STRIBOG512:
++	  is_GOST = 1;
++	  break;
++	}
++
+   s = gcry_md_algo_name (algo);
+   for (i=0; *s && i < sizeof algo_name - 1; s++, i++)
+     algo_name[i] = tolower (*s);
+@@ -997,7 +1011,15 @@ check_cert_sig (ksba_cert_t issuer_cert, ksba_cert_t cert)
+    */
+   digestlen = gcry_md_get_algo_dlen (algo);
+   digest = gcry_md_read (md, algo);
+-  if (pk_algo_from_sexp (s_pkey) == GCRY_PK_DSA)
++  int pk_algo = pk_algo_from_sexp (s_pkey);
++  if ((pk_algo == GCRY_PK_ECC || pk_algo == GCRY_PK_ECDH) && is_GOST)
++	{
++	  flip_buffer (digest, digestlen);
++	  if ( gcry_sexp_build (&s_hash, NULL, "(data(flags gost)(value %b))",
++							digestlen, digest) )
++		BUG ();
++	}
++  else if (pk_algo == GCRY_PK_DSA)
+     {
+       /* NB.: We support only SHA-1 here because we had problems back
+        * then to get test data for DSA-2.  Meanwhile DSA has been

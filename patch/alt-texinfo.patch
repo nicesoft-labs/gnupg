@@ -1,0 +1,19 @@
+--- gnupg/doc/gnupg.texi
++++ gnupg/doc/gnupg.texi
+@@ -59,11 +59,11 @@ section entitled ``Copying''.
+ 
+ @dircategory GNU Utilities
+ @direntry
+-* gpg2: (gnupg).           OpenPGP encryption and signing tool.
+-* gpgsm: (gnupg).          S/MIME encryption and signing tool.
+-* gpg-agent: (gnupg).      The secret key daemon.
+-* dirmngr: (gnupg).        X.509 CRL and OCSP server.
+-* dirmngr-client: (gnupg). X.509 CRL and OCSP client.
++* gpg2: (gnupg2).           OpenPGP encryption and signing tool.
++* gpgsm: (gnupg2).          S/MIME encryption and signing tool.
++* gpg-agent: (gnupg2).      The secret key daemon.
++* dirmngr: (gnupg2).        X.509 CRL and OCSP server.
++* dirmngr-client: (gnupg2). X.509 CRL and OCSP client.
+ @end direntry
+ 
+ 

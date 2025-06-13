@@ -1,0 +1,33 @@
+diff --git a/gnupg/tools/Makefile.am b/gnupg/tools/Makefile.am
+index 0c828a7..a0d7de7 100644
+--- a/gnupg/tools/Makefile.am
++++ b/gnupg/tools/Makefile.am
+@@ -35,8 +35,8 @@ AM_CFLAGS = $(LIBGCRYPT_CFLAGS) $(GPG_ERROR_CFLAGS) $(LIBASSUAN_CFLAGS)
+ sbin_SCRIPTS = addgnupghome applygnupgdefaults
+ 
+ if HAVE_USTAR
+-# bin_SCRIPTS += gpg-zip
+-noinst_SCRIPTS = gpg-zip
++bin_SCRIPTS = gpg-zip
++#noinst_SCRIPTS = gpg-zip
+ endif
+ 
+ if BUILD_SYMCRYPTRUN
+@@ -53,7 +53,7 @@ endif
+ 
+ libexec_PROGRAMS = gpg-wks-client
+ 
+-bin_PROGRAMS = gpgconf gpg-connect-agent ${symcryptrun}
++bin_PROGRAMS = gpgconf gpg-connect-agent ${symcryptrun} gpgsplit
+ if !HAVE_W32_SYSTEM
+ bin_PROGRAMS += watchgnupg gpgparsemail ${gpg_wks_server}
+ endif
+@@ -63,7 +63,7 @@ libexec_PROGRAMS += gpg-check-pattern
+ endif
+ 
+ if !HAVE_W32CE_SYSTEM
+-noinst_PROGRAMS = clean-sat make-dns-cert gpgsplit
++noinst_PROGRAMS = clean-sat make-dns-cert
+ endif
+ 
+ if !HAVE_W32CE_SYSTEM

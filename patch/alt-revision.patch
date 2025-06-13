@@ -1,0 +1,26 @@
+diff --git a/gnupg/configure.ac b/gnupg/configure.ac
+index 65ae523..b53330d 100644
+--- a/gnupg/configure.ac
++++ b/gnupg/configure.ac
+@@ -36,16 +36,11 @@ m4_define([mym4_micro], [17])
+ # the tag "gnupg-2.1-base".  This is used as the base for counting
+ # beta numbers before the first release of a series.
+ 
+-# Below is m4 magic to extract and compute the git revision number,
+-# the decimalized short revision number, a beta version string and a
+-# flag indicating a development version (mym4_isbeta).  Note that the
+-# m4 processing is done by autoconf and not during the configure run.
+-m4_define([mym4_verslist], m4_split(m4_esyscmd([./autogen.sh --find-version] \
+-                           mym4_package mym4_major mym4_minor mym4_micro),[:]))
+-m4_define([mym4_isbeta],       m4_argn(2, mym4_verslist))
+-m4_define([mym4_version],      m4_argn(4, mym4_verslist))
+-m4_define([mym4_revision],     m4_argn(7, mym4_verslist))
+-m4_define([mym4_revision_dec], m4_argn(8, mym4_verslist))
++# Static version with revision slots @BETA@, @REVISION@ and @REVISION_DESC@
++m4_define([mym4_isbeta],       @BETA@)
++m4_define([mym4_version],      [mym4_major].[mym4_minor].[mym4_micro])
++m4_define([mym4_revision],     @REVISION@)
++m4_define([mym4_revision_dec], @REVISION_DESC@)
+ m4_esyscmd([echo ]mym4_version[>VERSION])
+ AC_INIT([mym4_package],[mym4_version], [https://bugs.gnupg.org])
+ 

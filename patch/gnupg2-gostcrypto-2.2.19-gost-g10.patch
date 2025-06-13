@@ -1,0 +1,2900 @@
+ g10/Makefile.am  |   3 +-
+ g10/getkey.c     |   8 +-
+ g10/gost.c       | 857 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ g10/gpg.c        |  45 ++-
+ g10/keyedit.c    |  19 +-
+ g10/keygen.c     | 444 ++++++++++++++++++----------
+ g10/keylist.c    |   2 +-
+ g10/main.h       |  11 +-
+ g10/mainproc.c   |  22 +-
+ g10/misc.c       | 131 ++++++++-
+ g10/pkclist.c    |  10 +
+ g10/pkglue.c     | 153 +++++++---
+ g10/pkglue.h     |  17 ++
+ g10/pubkey-enc.c |  66 ++++-
+ g10/seskey.c     |  15 +-
+ g10/sig-check.c  |  15 +-
+ g10/sign.c       |  84 +++---
+ 17 files changed, 1616 insertions(+), 286 deletions(-)
+
+diff --git a/g10/Makefile.am b/g10/Makefile.am
+index 1da60ce4a..2a10dff2f 100644
+--- a/g10/Makefile.am
++++ b/g10/Makefile.am
+@@ -121,7 +121,8 @@ common_source =  \
+ 	      sig-check.c	\
+ 	      keylist.c 	\
+ 	      pkglue.c pkglue.h \
+-	      ecdh.c
++	      ecdh.c \
++	      gost.c
+ 
+ gpg_sources = server.c          \
+ 	      $(common_source)	\
+diff --git a/g10/getkey.c b/g10/getkey.c
+index 0aca88ca1..9b3b784b5 100644
+--- a/g10/getkey.c
++++ b/g10/getkey.c
+@@ -2884,12 +2884,12 @@ merge_selfsigs_main (ctrl_t ctrl, kbnode_t keyblock, int *r_revoked,
+   if (!key_usage)
+     {
+       /* No key flags at all: get it from the algo.  */
+-      key_usage = openpgp_pk_algo_usage (pk->pubkey_algo);
++      key_usage = openpgp_pk_usage (pk);
+     }
+   else
+     {
+       /* Check that the usage matches the usage as given by the algo.  */
+-      int x = openpgp_pk_algo_usage (pk->pubkey_algo);
++      int x = openpgp_pk_usage (pk);
+       if (x) /* Mask it down to the actual allowed usage.  */
+ 	key_usage &= x;
+     }
+@@ -3157,12 +3157,12 @@ merge_selfsigs_subkey (ctrl_t ctrl, kbnode_t keyblock, kbnode_t subnode)
+   if (!key_usage)
+     {
+       /* No key flags at all: get it from the algo.  */
+-      key_usage = openpgp_pk_algo_usage (subpk->pubkey_algo);
++      key_usage = openpgp_pk_usage (subpk);
+     }
+   else
+     {
+       /* Check that the usage matches the usage as given by the algo.  */
+-      int x = openpgp_pk_algo_usage (subpk->pubkey_algo);
++      int x = openpgp_pk_usage (subpk);
+       if (x) /* Mask it down to the actual allowed usage.  */
+ 	key_usage &= x;
+     }
+diff --git a/g10/gost.c b/g10/gost.c
+new file mode 100644
+index 000000000..e856827ce
+--- /dev/null
++++ b/g10/gost.c
+@@ -0,0 +1,857 @@
++/* gost.c - GOST public key operations used in public key glue code
++ *	Copyright (C) 2019 Paul Wolneykien <manowar@altlinux.org>.
++ *
++ * This file is part of GnuPG.
++ *
++ * GnuPG is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * GnuPG is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <https://www.gnu.org/licenses/>.
++ */
++
++#include <config.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <errno.h>
++
++#include "gpg.h"
++#include "../common/util.h"
++#include "../common/gost-util.h"
++#include "pkglue.h"
++#include "main.h"
++#include "options.h"
++
++/* Version: 2 for GOST (FIXME, RFC). */
++#define GOST_KDF_PARAMS_VERSION 2
++
++typedef enum
++  {
++    DIGEST_PARAMS_UNSPECIFIED = 0,
++    DIGEST_PARAMS_GOSTR3411_94_A = 1, /* variant Verba-O: 1.2.643.2.2.30.1 */
++  }
++digest_params_t;
++
++typedef enum
++  {
++    CIPHER_PARAMS_GOST28147_A = 1,  /* variant Verba-O: 1.2.643.2.2.31.1 */
++    CIPHER_PARAMS_GOST28147_B = 2,  /* variant 1: 1.2.643.2.2.31.2 */
++    CIPHER_PARAMS_GOST28147_C = 3,  /* variant 2: 1.2.643.2.2.31.3 */
++    CIPHER_PARAMS_GOST28147_D = 4,  /* variant 3: 1.2.643.2.2.31.4 */
++    CIPHER_PARAMS_GOST28147_Z = 5,  /* variant Z: 1.2.643.7.1.2.5.1.1 */
++  }
++cipher_params_t;
++
++typedef enum
++  {
++    MAC_PARAMS_UNSPECIFIED = 0,
++    MAC_PARAMS_GOST28147_A = 1,  /* variant Verba-O: 1.2.643.2.2.31.1 */
++    MAC_PARAMS_GOST28147_B = 2,  /* variant 1: 1.2.643.2.2.31.2 */
++    MAC_PARAMS_GOST28147_C = 3,  /* variant 2: 1.2.643.2.2.31.3 */
++    MAC_PARAMS_GOST28147_D = 4,  /* variant 3: 1.2.643.2.2.31.4 */
++    MAC_PARAMS_GOST28147_Z = 5,  /* variant Z: 1.2.643.7.1.2.5.1.1 */
++  }
++mac_params_t;
++
++typedef enum
++  {
++    VKO_7836 = 1,
++  }
++vko_algo_t;
++
++typedef enum
++  {
++    KDF_NULL = 0,
++    GOST_KDF_CPDIVERS = 1,  /* or KDF_4357 (RFC 4357) */
++    GOST_KDF_TREE = 2,      /* or KDF_7836 (RFC 7836) */
++  }
++kdf_algo_t;
++
++typedef enum
++  {
++    KEYWRAP_7836,
++  }
++keywrap_algo_t;
++
++typedef struct
++  {
++    vko_algo_t vko_algo;   /* VKO algorithm */
++    union {
++      struct {
++        unsigned char ukm_len;  /* UKM length in bytes */
++        /* Digest algorithm parameters for VKO */
++        digest_algo_t   vko_digest_algo;
++        digest_params_t vko_digest_params;
++      } vko_7836; /* Parameters of the VKO algorithm in RFC 7836 */
++    } vko_params; /* Paramenters of the VKO algorithm */
++    kdf_algo_t kdf_algo; /* Key derivation algorithm */
++    union {
++      struct {
++        /* Cipher algorithm parameters for wrapping */
++        cipher_algo_t kdf_cipher_algo;
++        cipher_params_t kdf_cipher_params;
++      } kdf_4357;
++      struct {
++        unsigned char seed_len; /* Seed length in bytes */
++        char *label;      /* KDF tree label */
++        unsigned char R;        /* Inerations (1--4) */
++        unsigned int L;         /* Generated key length (in bits). */
++        /* Digest algorithm parameters for KDF */
++        digest_algo_t   kdf_digest_algo;
++        digest_params_t kdf_digest_params;
++      } kdf_7836; /* Parameters for the KDF tree algorithm in RFC 7836. */
++    } kdf_params; /* Paramenters of the KDF algorithm */
++    keywrap_algo_t keywrap_algo; /* Key wrapping algorithm */
++    union {
++      struct {
++        /* MAC algorithm parameters for wrapping */
++        mac_algo_t   keywrap_mac_algo;
++        mac_params_t keywrap_mac_params;
++        /* Cipher algorithm parameters for wrapping */
++        cipher_algo_t   keywrap_cipher_algo;
++        cipher_params_t keywrap_cipher_params;
++      } keywrap_7836; /* Key wrapping algorithm parameters in RFC 7836 */
++    } keywrap_params; /* Key wrapping algorithm parameters */
++  }
++gost_kdf_params_t;
++
++/* A table with the default GOST encryption parameters used by
++   GnuPG. */
++static const struct
++{
++  const char *oidpfx;  /* Key algorithm OID prefix */
++  unsigned int qbits;  /* Key length in bits */
++  gost_kdf_params_t params;  /* Corresponding VKO/KDF/KW parameters. */
++} gost_kdf_params_table[] =
++  /* Note: Must be sorted by ascending values for QBITS.  */
++  {
++    { "1.2.643.2.2.35.", 256,
++      {
++        .vko_algo = VKO_7836,
++        .vko_params.vko_7836 =
++        {
++          8, DIGEST_ALGO_GOSTR3411_94, DIGEST_PARAMS_GOSTR3411_94_A
++        },
++        .kdf_algo = GOST_KDF_CPDIVERS,
++        .kdf_params.kdf_4357 =
++        {
++          CIPHER_ALGO_GOST28147, CIPHER_PARAMS_GOST28147_A
++        },
++        .keywrap_algo = KEYWRAP_7836,
++        .keywrap_params.keywrap_7836 =
++        {
++          MAC_ALGO_GOST28147_IMIT, MAC_PARAMS_GOST28147_A,
++          CIPHER_ALGO_GOST28147, CIPHER_PARAMS_GOST28147_A
++        }
++      }
++    },
++    { "1.2.643.2.2.36.", 256,
++      {
++        .vko_algo = VKO_7836,
++        .vko_params.vko_7836 =
++        {
++          8, DIGEST_ALGO_GOSTR3411_94, DIGEST_PARAMS_GOSTR3411_94_A
++        },
++        .kdf_algo = GOST_KDF_CPDIVERS,
++        .kdf_params.kdf_4357 =
++        {
++          CIPHER_ALGO_GOST28147, CIPHER_PARAMS_GOST28147_A
++        },
++        .keywrap_algo = KEYWRAP_7836,
++        .keywrap_params.keywrap_7836 =
++        {
++          MAC_ALGO_GOST28147_IMIT, MAC_PARAMS_GOST28147_A,
++          CIPHER_ALGO_GOST28147, CIPHER_PARAMS_GOST28147_A
++        }
++      }
++    },
++    { "1.2.643.7.1.2.1.1.", 256,
++      {
++        .vko_algo = VKO_7836,
++        .vko_params.vko_7836 =
++        {
++          8, DIGEST_ALGO_GOSTR3411_12_256, DIGEST_PARAMS_UNSPECIFIED
++        },
++        .kdf_algo = GOST_KDF_CPDIVERS,
++        .kdf_params.kdf_4357 =
++        {
++          CIPHER_ALGO_GOST28147, CIPHER_PARAMS_GOST28147_Z
++        },
++        .keywrap_algo = KEYWRAP_7836,
++        .keywrap_params.keywrap_7836 =
++        {
++          MAC_ALGO_GOST28147_IMIT, MAC_PARAMS_GOST28147_Z,
++          CIPHER_ALGO_GOST28147, CIPHER_PARAMS_GOST28147_Z
++        }
++      }
++    },
++    { "1.2.643.7.1.2.1.2.", 512,
++      {
++        .vko_algo = VKO_7836,
++        .vko_params.vko_7836 =
++        {
++          8, DIGEST_ALGO_GOSTR3411_12_256, DIGEST_PARAMS_UNSPECIFIED
++        },
++        .kdf_algo = GOST_KDF_CPDIVERS,
++        .kdf_params.kdf_4357 =
++        {
++          CIPHER_ALGO_GOST28147, CIPHER_PARAMS_GOST28147_Z
++        },
++        .keywrap_algo = KEYWRAP_7836,
++        .keywrap_params.keywrap_7836 =
++        {
++          MAC_ALGO_GOST28147_IMIT, MAC_PARAMS_GOST28147_Z,
++          CIPHER_ALGO_GOST28147, CIPHER_PARAMS_GOST28147_Z
++        }
++      }
++    },
++  };
++
++static gpg_error_t
++pack_gost_kdf_params (const gost_kdf_params_t *params, unsigned char *buf,
++                      size_t *length)
++{
++  size_t len = 0;
++
++  if (*length < (len + 1)) return GPG_ERR_TOO_SHORT;
++  buf[len+0] = params->vko_algo;
++  len += 1;
++
++  switch (params->vko_algo)
++    {
++    case VKO_7836:
++      if (*length < (len + 3)) return GPG_ERR_TOO_SHORT;
++      buf[len+0] = params->vko_params.vko_7836.ukm_len;
++      buf[len+1] = params->vko_params.vko_7836.vko_digest_algo;
++      buf[len+2] = params->vko_params.vko_7836.vko_digest_params;
++      len += 3;
++      break;
++
++    default:
++      return GPG_ERR_UNKNOWN_ALGORITHM;
++    }
++
++  if (*length < (len + 1)) return GPG_ERR_TOO_SHORT;
++  buf[len+0] = params->kdf_algo;
++  len += 1;
++
++  switch (params->kdf_algo)
++    {
++    case GOST_KDF_TREE:
++      {
++        size_t label_len = strlen (params->kdf_params.kdf_7836.label);
++        if (*length < (len + 8 + label_len)) return GPG_ERR_TOO_SHORT;
++        buf[len+0] = params->kdf_params.kdf_7836.seed_len;
++        /* Bits 15--8, 7--0 of label_len */
++        buf[len+1] = (label_len >> 8) & 0xff;
++        buf[len+2] = label_len & 0xff;
++        memcpy (buf+len+3, params->kdf_params.kdf_7836.label, label_len);
++        len += 3 + label_len;
++        buf[len+0] = params->kdf_params.kdf_7836.R;
++        /* Bits 15--8, 7--0 of L*/
++        buf[len+1] = (params->kdf_params.kdf_7836.L >> 8) & 0xff;
++        buf[len+2] = params->kdf_params.kdf_7836.L & 0xff;
++        buf[len+3] = params->kdf_params.kdf_7836.kdf_digest_algo;
++        buf[len+4] = params->kdf_params.kdf_7836.kdf_digest_params;
++        len += 5;
++      }
++      break;
++
++    case GOST_KDF_CPDIVERS:
++      buf[len+0] = params->kdf_params.kdf_4357.kdf_cipher_algo;
++      buf[len+1] = params->kdf_params.kdf_4357.kdf_cipher_params;
++      len += 2;
++      break;
++
++    case KDF_NULL:
++      break; /* No params */
++
++    default:
++      return GPG_ERR_UNKNOWN_ALGORITHM;
++    }
++
++  if (*length < (len + 1)) return GPG_ERR_TOO_SHORT;
++  buf[len+0] = params->keywrap_algo;
++  len += 1;
++
++  switch (params->keywrap_algo)
++    {
++    case KEYWRAP_7836:
++      if (*length < (len + 4)) return GPG_ERR_TOO_SHORT;
++      buf[len+0] = params->keywrap_params.keywrap_7836.keywrap_mac_algo;
++      buf[len+1] = params->keywrap_params.keywrap_7836.keywrap_mac_params;
++      buf[len+2] = params->keywrap_params.keywrap_7836.keywrap_cipher_algo;
++      buf[len+3] = params->keywrap_params.keywrap_7836.keywrap_cipher_params;
++      len += 4;
++      break;
++
++    default:
++      return GPG_ERR_UNKNOWN_ALGORITHM;
++    }
++
++  *length = len;
++
++  return GPG_ERR_NO_ERROR;
++}
++
++void
++free_gost_kdf_params (gost_kdf_params_t *params)
++{
++  if (params)
++    {
++      switch (params->kdf_algo)
++        {
++        case GOST_KDF_TREE:
++          if (params->kdf_params.kdf_7836.label)
++            xfree (params->kdf_params.kdf_7836.label);
++          break;
++        }
++      xfree (params);
++    }
++}
++
++static gpg_error_t
++unpack_gost_kdf_params (byte *packed, gost_kdf_params_t **r_params)
++{
++  gpg_error_t ret = GPG_ERR_NO_ERROR;
++  gost_kdf_params_t *params = NULL;
++  unsigned int pos = 0;
++
++  params = xtrymalloc (sizeof (*params));
++  if (!params) return gpg_error_from_syserror ();
++
++  memset (params, 0, sizeof (*params));
++
++  params->vko_algo = packed[pos+0];
++  pos += 1;
++
++  switch (params->vko_algo)
++    {
++    case VKO_7836:
++      params->vko_params.vko_7836.ukm_len = packed[pos+0];
++      params->vko_params.vko_7836.vko_digest_algo = packed[pos+1];
++      params->vko_params.vko_7836.vko_digest_params = packed[pos+2];
++      pos += 3;
++      break;
++
++    default:
++      ret = GPG_ERR_UNKNOWN_ALGORITHM;
++      goto exit;
++    }
++
++  params->kdf_algo = packed[pos+0];
++  pos += 1;
++
++  switch (params->kdf_algo)
++    {
++    case GOST_KDF_TREE:
++      {
++        params->kdf_params.kdf_7836.seed_len = packed[pos+0];
++        /* Bits 15--8, 7--0 of label_len */
++        size_t label_len = (packed[pos+1] << 8) | packed[pos+2];
++        params->kdf_params.kdf_7836.label = xtrymalloc (label_len + 1);
++        if (!params->kdf_params.kdf_7836.label)
++          {
++            ret = gpg_error_from_syserror ();
++            goto exit;
++          }
++        memcpy (params->kdf_params.kdf_7836.label, packed+pos+3, label_len);
++        params->kdf_params.kdf_7836.label[label_len] = '\0';
++        pos += 3 + label_len;
++        params->kdf_params.kdf_7836.R = packed[pos+0];
++        /* Bits 15--8, 7--0 of L*/
++        params->kdf_params.kdf_7836.L = (packed[pos+1] << 8) | packed[pos+2];
++        params->kdf_params.kdf_7836.kdf_digest_algo = packed[pos+3];
++        params->kdf_params.kdf_7836.kdf_digest_params = packed[pos+4];
++        pos += 5;
++      }
++      break;
++
++    case GOST_KDF_CPDIVERS:
++      params->kdf_params.kdf_4357.kdf_cipher_algo = packed[pos+0];
++      params->kdf_params.kdf_4357.kdf_cipher_params = packed[pos+1];
++      pos += 2;
++      break;
++
++    case KDF_NULL:
++      break; /* No params */
++
++    default:
++      ret = GPG_ERR_UNKNOWN_ALGORITHM;
++      goto exit;
++    }
++
++  packed[pos+0] = params->keywrap_algo;
++  pos += 1;
++
++  switch (params->keywrap_algo)
++    {
++    case KEYWRAP_7836:
++      params->keywrap_params.keywrap_7836.keywrap_mac_algo = packed[pos+0];
++      params->keywrap_params.keywrap_7836.keywrap_mac_params = packed[pos+1];
++      params->keywrap_params.keywrap_7836.keywrap_cipher_algo = packed[pos+2];
++      params->keywrap_params.keywrap_7836.keywrap_cipher_params = packed[pos+3];
++      pos += 4;
++      break;
++
++    default:
++      ret = GPG_ERR_UNKNOWN_ALGORITHM;
++    }
++
++ exit:
++  if (ret != GPG_ERR_NO_ERROR)
++    {
++      free_gost_kdf_params (params);
++      params = NULL;
++    }
++  else
++    *r_params = params;
++
++  return ret;
++}
++
++gpg_error_t
++pk_gost_get_kdf_params (gcry_mpi_t *pkey, gost_kdf_params_t **r_params)
++{
++  const unsigned char *kdf_params = NULL;
++  size_t kdf_params_size;
++  unsigned int nbits;
++
++  kdf_params = gcry_mpi_get_opaque (pkey[2], &nbits);
++  kdf_params_size = (nbits+7)/8;
++
++  /* Expect GOST version (see pk_gost_default_params() below) */
++  if (kdf_params_size > 2 && kdf_params[1] != GOST_KDF_PARAMS_VERSION)
++    return GPG_ERR_BAD_PUBKEY;
++
++  return unpack_gost_kdf_params (((byte *) kdf_params) + 2, r_params);
++}
++
++// FIXME: too large?
++#define KDF_PARAMS_MAX_LEN 512
++
++/* Returns KEK parameters as an opaque MPI in R_PARAMS. */
++gpg_error_t
++pk_gost_default_params (const char *oidstr, unsigned int qbits,
++                        gcry_mpi_t *r_params)
++{
++  gpg_error_t ret = GPG_ERR_NO_ERROR;
++  unsigned char *kdf_params = xtrymalloc (KDF_PARAMS_MAX_LEN);
++  size_t len = KDF_PARAMS_MAX_LEN - 2;
++
++  kdf_params[1] = GOST_KDF_PARAMS_VERSION;
++
++  /* Search for matching KEK parameter. Defaults to the strongest
++     possible choices. */
++  for (int i = 0; i < DIM (gost_kdf_params_table); i++)
++    {
++      if (0 == strncmp (oidstr, gost_kdf_params_table[i].oidpfx, strlen (gost_kdf_params_table[i].oidpfx))
++          && gost_kdf_params_table[i].qbits >= qbits)
++        {
++          ret = pack_gost_kdf_params (&gost_kdf_params_table[i].params,
++                                      &kdf_params[2],
++                                      &len);
++          break;
++        }
++    }
++
++  if (ret != GPG_ERR_NO_ERROR)
++    goto exit;
++
++  if (len > 255)
++    {
++      ret = GPG_ERR_TOO_LARGE;
++      goto exit;
++    }
++
++  kdf_params[0] = (byte) (len + 1);
++
++  if (DBG_CRYPTO)
++    log_printhex ("GOST KDF params are", kdf_params, len + 2);
++
++  *r_params = gcry_mpi_set_opaque (*r_params, kdf_params, (len + 2) * 8);
++  if (!*r_params)
++    {
++      ret = gpg_error_from_syserror ();
++      goto exit;
++    }
++
++ exit:
++  if (ret != GPG_ERR_NO_ERROR)
++    {
++      xfree (kdf_params);
++    }
++
++  return ret;
++}
++
++/* Generate an UKM value for a public ECDH (GOST) key in PKEY.
++   On success the generated value is stored at R_UKM. On failure NULL
++   is stored and an error code is returned. */
++gpg_error_t
++pk_gost_generate_ukm (gcry_mpi_t *pkey, gcry_mpi_t *r_ukm,
++                      unsigned int *r_nbits)
++{
++  gost_kdf_params_t *params = NULL;
++  gpg_error_t ret;
++
++  *r_ukm = NULL;
++
++  ret = pk_gost_get_kdf_params (pkey, &params);
++  if (ret != GPG_ERR_NO_ERROR)
++    return ret;
++
++  int ukm_blen;
++  switch (params->vko_algo)
++    {
++    case VKO_7836:
++      ukm_blen = params->vko_params.vko_7836.ukm_len * 8;
++      break;
++
++    default:
++      ret = GPG_ERR_UNKNOWN_ALGORITHM;
++      goto exit;
++    }
++
++  if (!ukm_blen)
++    {
++      ret = GPG_ERR_TOO_SHORT;
++      goto exit;
++    }
++
++  ret = gost_generate_ukm (ukm_blen, r_ukm);
++
++ exit:
++  free_gost_kdf_params (params);
++
++  if (GPG_ERR_NO_ERROR == ret && r_nbits)
++      *r_nbits = ukm_blen;
++
++  return ret;
++}
++
++static const char*
++digest_params_to_oid (digest_params_t digest_params)
++{
++  switch (digest_params)
++    {
++    case DIGEST_PARAMS_GOSTR3411_94_A:
++      return "1.2.643.2.2.30.1";
++    default:
++      return NULL;
++    }
++}
++
++static const char*
++cipher_params_to_sbox (cipher_params_t cipher_params)
++{
++  switch (cipher_params)
++    {
++    case CIPHER_PARAMS_GOST28147_A:
++      return "1.2.643.2.2.31.1";
++    case CIPHER_PARAMS_GOST28147_B:
++      return "1.2.643.2.2.31.2";
++    case CIPHER_PARAMS_GOST28147_C:
++      return "1.2.643.2.2.31.3";
++    case CIPHER_PARAMS_GOST28147_D:
++      return "1.2.643.2.2.31.4";
++    case CIPHER_PARAMS_GOST28147_Z:
++      return "1.2.643.7.1.2.5.1.1";
++    default:
++      return NULL;
++    }
++}
++
++static const char*
++mac_params_to_sbox (mac_params_t mac_params)
++{
++  switch (mac_params)
++    {
++    case MAC_PARAMS_GOST28147_A:
++      return "1.2.643.2.2.31.1";
++    case MAC_PARAMS_GOST28147_B:
++      return "1.2.643.2.2.31.2";
++    case MAC_PARAMS_GOST28147_C:
++      return "1.2.643.2.2.31.3";
++    case MAC_PARAMS_GOST28147_D:
++      return "1.2.643.2.2.31.4";
++    case MAC_PARAMS_GOST28147_Z:
++      return "1.2.643.7.1.2.5.1.1";
++    default:
++      return NULL;
++    }
++}
++
++static gpg_error_t
++gost_kdf (const gost_kdf_params_t *params, gcry_mpi_t ukm,
++          const unsigned char *kek_buf, size_t kek_len,
++          gcry_mpi_t *r_kek)
++{
++  gpg_error_t ret = GPG_ERR_NO_ERROR;
++
++  switch (params->kdf_algo)
++    {
++    case KDF_NULL:
++      *r_kek = gcry_mpi_set_opaque_copy (*r_kek, kek_buf, 8 * kek_len);
++      break;
++    case GOST_KDF_CPDIVERS:
++      ret = gost_cpdiversify_key (r_kek,
++                                  map_cipher_openpgp_to_gcry (params->kdf_params.kdf_4357.kdf_cipher_algo),
++                                  cipher_params_to_sbox (params->kdf_params.kdf_4357.kdf_cipher_params),
++                                  kek_buf, kek_len, ukm);
++      break;
++    case GOST_KDF_TREE:
++      /* TODO */
++      ret = GPG_ERR_UNSUPPORTED_ALGORITHM;
++      break;
++    default:
++      ret = GPG_ERR_UNKNOWN_ALGORITHM;
++    }
++
++  return ret;
++}
++
++static gpg_error_t
++gost_vko_kdf (const gost_kdf_params_t *params, gcry_mpi_t shared,
++              gcry_mpi_t ukm, gcry_mpi_t *r_kek)
++{
++  unsigned char *kek_buf = NULL;
++  size_t kek_len;
++  gpg_error_t ret = GPG_ERR_NO_ERROR;
++
++  switch (params->vko_algo)
++    {
++    case VKO_7836:
++      ret = gost_vko (shared,
++                      map_md_openpgp_to_gcry (params->vko_params.vko_7836.vko_digest_algo),
++                      digest_params_to_oid (params->vko_params.vko_7836.vko_digest_params),
++                      &kek_buf, &kek_len);
++      break;
++
++    default:
++      ret = GPG_ERR_UNKNOWN_ALGORITHM;
++    }
++
++  if (ret != GPG_ERR_NO_ERROR)
++    goto exit;
++
++  ret = gost_kdf (params, ukm, kek_buf, kek_len, r_kek);
++
++ exit:
++  xfree (kek_buf);
++
++  return ret;
++}
++
++/* Encrypts a secret key DATA for the is the recepient public key PKEY using
++   a key encryption key that is calculated from a SHARED point and a UKM value
++   in accordance with the key KDF parameters.
++   On success the result is stored at R_RESULT; on failure NULL is stored
++   at R_RESULT and an error code returned.  */
++gpg_error_t
++pk_gost_encrypt_with_shared_point (gcry_mpi_t shared, gcry_mpi_t ukm,
++                                   gcry_mpi_t data, gcry_mpi_t *pkey,
++                                   gcry_mpi_t *r_result)
++{
++  gost_kdf_params_t *kdf_params = NULL;
++  gcry_mpi_t kek = NULL;
++  gcry_mpi_t encoded_key = NULL;
++  unsigned char *encbuf = NULL;
++  gpg_error_t ret = GPG_ERR_NO_ERROR;
++
++  if (DBG_CRYPTO)
++    {
++      log_printmpi ("GOST unwrapped value:", data);
++      log_printmpi ("GOST UKM:", ukm);
++      log_printmpi ("GOST shared point:", shared);
++    }
++
++  *r_result = NULL;
++
++  ret = pk_gost_get_kdf_params (pkey, &kdf_params);
++  if (ret != GPG_ERR_NO_ERROR)
++    return ret;
++
++  ret = gost_vko_kdf (kdf_params, shared, ukm, &kek);
++  if (ret != GPG_ERR_NO_ERROR)
++    goto exit;
++
++  if (DBG_CRYPTO)
++    log_printmpi ("GOST KEK:", kek);
++
++  switch (kdf_params->keywrap_algo)
++    {
++    case KEYWRAP_7836:
++      ret = gost_keywrap (&encoded_key,
++                          map_cipher_openpgp_to_gcry (kdf_params->keywrap_params.keywrap_7836.keywrap_cipher_algo),
++                          cipher_params_to_sbox (kdf_params->keywrap_params.keywrap_7836.keywrap_cipher_params),
++                          map_mac_openpgp_to_gcry (kdf_params->keywrap_params.keywrap_7836.keywrap_mac_algo),
++                          mac_params_to_sbox (kdf_params->keywrap_params.keywrap_7836.keywrap_mac_params),
++                          data, ukm, kek);
++      break;
++    default:
++      ret = GPG_ERR_UNKNOWN_ALGORITHM;
++    }
++  if (ret != GPG_ERR_NO_ERROR)
++    goto exit;
++
++  if (DBG_CRYPTO)
++    log_printmpi ("GOST wrapped value:", encoded_key);
++
++  unsigned int enc_blen;
++  unsigned char *encoded_key_buf = gcry_mpi_get_opaque (encoded_key, &enc_blen);
++  size_t enclen = (enc_blen+7)/8;
++  if (enclen > 255)
++    {
++      ret = GPG_ERR_TOO_LARGE;
++      goto exit;
++    }
++
++  encbuf = xmalloc (enclen + 1);
++  if (!encbuf)
++    {
++      ret = gpg_error_from_syserror ();
++      goto exit;
++    }
++
++  encbuf[0] = (unsigned char) enclen;
++  memcpy (encbuf + 1, encoded_key_buf, enclen);
++
++  *r_result = gcry_mpi_set_opaque (*r_result, encbuf, (enclen + 1) * 8);
++
++  if (DBG_CRYPTO)
++    log_printmpi ("GOST encrypted value:", *r_result);
++
++ exit:
++  free_gost_kdf_params (kdf_params);
++  gcry_mpi_release (kek);
++  gcry_mpi_release (encoded_key);
++
++  if (!*r_result)
++    xfree (encbuf);
++
++  return ret;
++}
++
++/* Decrypts a secret key DATA encrypted for the public key PKEY using
++   a key encryption key that is calculated from a SHARED point and a UKM value
++   in accordance with the key KDF parameters. On success the result is stored
++   at R_RESULT; on failure NULL is stored at R_RESULT and an error code
++   returned. */
++gpg_error_t
++pk_gost_decrypt_with_shared_point (gcry_mpi_t shared, gcry_mpi_t ukm,
++                                   gcry_mpi_t data, gcry_mpi_t *pkey,
++                                   gcry_mpi_t *r_result)
++{
++  gost_kdf_params_t *kdf_params = NULL;
++  gcry_mpi_t kek = NULL;
++  unsigned char *data_buf = NULL;
++  gpg_error_t ret = GPG_ERR_NO_ERROR;
++
++  if (DBG_CRYPTO)
++    log_printmpi ("GOST encrypted value:", data);
++
++  *r_result = NULL;
++
++  unsigned int data_bits;
++  data_buf = gcry_mpi_get_opaque (data, &data_bits);
++  if (!data_buf)
++    {
++      ret = gpg_error_from_syserror ();
++      goto exit;
++    }
++
++  byte data_len = (byte) ((data_bits + 7)/8);
++  if (data_buf[0] != (data_len - 1))
++    {
++      ret = GPG_ERR_BAD_MPI;
++      goto exit;
++    }
++
++  if (DBG_CRYPTO)
++    {
++      log_printhex ("GOST wrapped value:", data_buf + 1, data_len - 1);
++      log_printmpi ("GOST UKM:", ukm);
++    }
++
++  ret = pk_gost_get_kdf_params (pkey, &kdf_params);
++  if (ret != GPG_ERR_NO_ERROR)
++    return ret;
++
++  unsigned int shared_blen = gcry_mpi_get_nbits (shared);
++  if (shared_blen < gcry_mpi_get_nbits (pkey[1]))
++    {
++      if (DBG_CRYPTO)
++        log_debug ("GOST shared point: --\n");
++
++      /* It seems that a KEK is directly passed here, possibly from
++         a hardware token or card. */
++      unsigned char shared_len = (shared_blen+7)/8;
++      unsigned char *kek_buf = xtrymalloc_secure (shared_len);
++      if (!kek_buf)
++        {
++          ret = gpg_error_from_syserror ();
++          goto exit;
++        }
++
++      ret = gcry_mpi_print (GCRYMPI_FMT_USG, kek_buf, shared_len, NULL,
++                            shared);
++      if (ret != GPG_ERR_NO_ERROR)
++        goto exit;
++
++      ret = gost_kdf (kdf_params, ukm, kek_buf, shared_len, &kek);
++      xfree (kek_buf);
++
++      if (!kek)
++        {
++          ret = gpg_error_from_syserror ();
++          goto exit;
++        }
++    }
++  else
++    {
++      /* Normal shared point case. */
++      if (DBG_CRYPTO)
++        log_printmpi ("GOST shared point:", shared);
++
++      ret = gost_vko_kdf (kdf_params, shared, ukm, &kek);
++      if (ret != GPG_ERR_NO_ERROR)
++        goto exit;
++    }
++
++  if (DBG_CRYPTO)
++    log_printmpi ("GOST KEK:", kek);
++
++  switch (kdf_params->keywrap_algo)
++    {
++    case KEYWRAP_7836:
++      ret = gost_keyunwrap (r_result,
++                          map_cipher_openpgp_to_gcry (kdf_params->keywrap_params.keywrap_7836.keywrap_cipher_algo),
++                          cipher_params_to_sbox (kdf_params->keywrap_params.keywrap_7836.keywrap_cipher_params),
++                          map_mac_openpgp_to_gcry (kdf_params->keywrap_params.keywrap_7836.keywrap_mac_algo),
++                          mac_params_to_sbox (kdf_params->keywrap_params.keywrap_7836.keywrap_mac_params),
++                            data_buf + 1, data_len - 1, ukm, kek);
++      break;
++    default:
++      ret = GPG_ERR_UNKNOWN_ALGORITHM;
++    }
++  if (ret != GPG_ERR_NO_ERROR)
++    goto exit;
++
++  if (DBG_CRYPTO)
++    log_printmpi ("GOST unwrapped value:", *r_result);
++
++ exit:
++  free_gost_kdf_params (kdf_params);
++  gcry_mpi_release (kek);
++
++  return ret;
++}
+diff --git a/g10/gpg.c b/g10/gpg.c
+index 55165ec89..0f8464574 100644
+--- a/g10/gpg.c
++++ b/g10/gpg.c
+@@ -1000,20 +1000,40 @@ build_list_pk_test_algo (int algo)
+      is also available.  */
+   if (algo == PUBKEY_ALGO_RSA_E
+       || algo == PUBKEY_ALGO_RSA_S)
+-    return GPG_ERR_DIGEST_ALGO;
++    return GPG_ERR_PUBKEY_ALGO;
+ 
+-  return openpgp_pk_test_algo (algo);
++  if (algo < 110)
++    return openpgp_pk_test_algo (algo);
++  else
++    return GPG_ERR_PUBKEY_ALGO;
+ }
+ 
+ static const char *
+ build_list_pk_algo_name (int algo)
+ {
+-  return openpgp_pk_algo_name (algo);
++  const char *s = openpgp_pk_algo_name (algo);
++
++  if (0 == strcmp (s, "ECDH")
++      && openpgp_is_curve_supported ("GOST2012-256-A", NULL, NULL))
++    s = "ECDH (incl. GOST)";
++
++  return s;
+ }
+ 
+ static int
+ build_list_cipher_test_algo (int algo)
+ {
++  if (algo < 110)
++    ;
++  else
++    switch (algo)
++      {
++      case CIPHER_ALGO_GOST28147:
++        break;
++      default:
++        return GPG_ERR_CIPHER_ALGO;
++      }
++
+   return openpgp_cipher_test_algo (algo);
+ }
+ 
+@@ -1031,6 +1051,19 @@ build_list_md_test_algo (int algo)
+   if (algo == DIGEST_ALGO_MD5)
+     return GPG_ERR_DIGEST_ALGO;
+ 
++  if (algo < 110)
++    ;
++  else
++    switch (algo)
++      {
++      case DIGEST_ALGO_GOSTR3411_94:
++      case DIGEST_ALGO_GOSTR3411_12_256:
++      case DIGEST_ALGO_GOSTR3411_12_512:
++        break;
++      default:
++        return GPG_ERR_DIGEST_ALGO;
++      }
++
+   return openpgp_md_test_algo (algo);
+ }
+ 
+@@ -1141,7 +1174,7 @@ build_list (const char *text, char letter,
+   len = 0;
+   init_membuf (&mb, 512);
+ 
+-  for (i=0; i <= 110; i++ )
++  for (i=0; i <= 255; i++ )
+     {
+       if (!chkf (i) && (s = mapf (i)))
+         {
+@@ -3995,8 +4028,8 @@ main (int argc, char **argv)
+ 				      || cmd == aClearsign,
+ 				      opt.def_digest_algo))
+       log_error (_("digest algorithm '%s' may not be used in %s mode\n"),
+-		 gcry_md_algo_name (opt.def_digest_algo),
+-		 gnupg_compliance_option_string (opt.compliance));
++        gcry_md_algo_name ( map_md_openpgp_to_gcry (opt.def_digest_algo) ),
++        gnupg_compliance_option_string (opt.compliance));
+ 
+     /* Fail hard.  */
+     if (log_get_errorcount (0))
+diff --git a/g10/keyedit.c b/g10/keyedit.c
+index 7ed997ad7..3fcd797ef 100644
+--- a/g10/keyedit.c
++++ b/g10/keyedit.c
+@@ -3052,10 +3052,10 @@ show_prefs (PKT_user_id * uid, PKT_signature * selfsig, int verbose)
+ 	      if (any)
+ 		tty_printf (", ");
+ 	      any = 1;
+-	      /* We don't want to display strings for experimental algos */
++	      const char *algo_name = openpgp_cipher_algo_name (prefs[i].value);
+ 	      if (!openpgp_cipher_test_algo (prefs[i].value)
+-		  && prefs[i].value < 100)
+-		tty_printf ("%s", openpgp_cipher_algo_name (prefs[i].value));
++              && strcmp (algo_name, "?") != 0)
++            tty_printf ("%s", algo_name);
+ 	      else
+ 		tty_printf ("[%d]", prefs[i].value);
+ 	      if (prefs[i].value == CIPHER_ALGO_3DES)
+@@ -3077,9 +3077,10 @@ show_prefs (PKT_user_id * uid, PKT_signature * selfsig, int verbose)
+ 	      if (any)
+ 		tty_printf (", ");
+ 	      any = 1;
+-	      /* We don't want to display strings for experimental algos */
+-	      if (!gcry_md_test_algo (prefs[i].value) && prefs[i].value < 100)
+-		tty_printf ("%s", gcry_md_algo_name (prefs[i].value));
++	      const char *algo_name = openpgp_md_algo_name (prefs[i].value);
++	      if (!openpgp_md_test_algo (prefs[i].value)
++              && strcmp (algo_name, "?") != 0)
++            tty_printf ("%s", algo_name);
+ 	      else
+ 		tty_printf ("[%d]", prefs[i].value);
+ 	      if (prefs[i].value == DIGEST_ALGO_SHA1)
+@@ -4594,11 +4595,9 @@ menu_changeusage (ctrl_t ctrl, kbnode_t keyblock)
+ 		}
+ 
+               if (mainkey)
+-                main_pk->pubkey_usage = ask_key_flags (main_pk->pubkey_algo, 0,
+-                                                       main_pk->pubkey_usage);
++                main_pk->pubkey_usage = ask_pk_key_flags (main_pk, 0);
+               else
+-                sub_pk->pubkey_usage  = ask_key_flags (sub_pk->pubkey_algo, 1,
+-                                                       sub_pk->pubkey_usage);
++                sub_pk->pubkey_usage  = ask_pk_key_flags (sub_pk, 1);
+ 
+ 	      if (mainkey)
+ 		rc = update_keysig_packet (ctrl,
+diff --git a/g10/keygen.c b/g10/keygen.c
+index c4cfe009a..b419c3a7e 100644
+--- a/g10/keygen.c
++++ b/g10/keygen.c
+@@ -1190,11 +1190,19 @@ ecckey_from_sexp (gcry_mpi_t *array, gcry_sexp_t sexp, int algo)
+ 
+   if (algo == PUBKEY_ALGO_ECDH)
+     {
+-      array[2] = pk_ecdh_default_params (nbits);
+-      if (!array[2])
++      if (openpgp_oidstr_is_gost (oidstr))
+         {
+-          err = gpg_error_from_syserror ();
+-          goto leave;
++          err = pk_gost_default_params (oidstr, nbits, &array[2]);
++          if (err) goto leave;
++        }
++      else
++        {
++          array[2] = pk_ecdh_default_params (nbits);
++          if (!array[2])
++            {
++              err = gpg_error_from_syserror ();
++              goto leave;
++            }
+         }
+     }
+ 
+@@ -1578,6 +1586,7 @@ gen_ecc (int algo, const char *curve, kbnode_t pub_root,
+ {
+   gpg_error_t err;
+   char *keyparms;
++  int is_GOST = 0;
+ 
+   log_assert (algo == PUBKEY_ALGO_ECDSA
+               || algo == PUBKEY_ALGO_EDDSA
+@@ -1593,6 +1602,9 @@ gen_ecc (int algo, const char *curve, kbnode_t pub_root,
+   else if (!ascii_strcasecmp (curve, "ed25519"))
+     curve = "Ed25519";
+ 
++  if (0 == strncmp (curve, "GOST", 4))
++      is_GOST = 1;
++
+   /* Note that we use the "comp" flag with EdDSA to request the use of
+      a 0x40 compression prefix octet.  */
+   if (algo == PUBKEY_ALGO_EDDSA)
+@@ -1611,11 +1623,12 @@ gen_ecc (int algo, const char *curve, kbnode_t pub_root,
+         " transient-key" : ""));
+   else
+     keyparms = xtryasprintf
+-      ("(genkey(ecc(curve %zu:%s)(flags nocomp%s)))",
++      ("(genkey(ecc(curve %zu:%s)(flags nocomp%s%s)))",
+        strlen (curve), curve,
+        (((keygen_flags & KEYGEN_FLAG_TRANSIENT_KEY)
+          && (keygen_flags & KEYGEN_FLAG_NO_PROTECTION))?
+-        " transient-key" : ""));
++        " transient-key" : ""),
++       is_GOST ? " gost" : "");
+ 
+   if (!keyparms)
+     err = gpg_error_from_syserror ();
+@@ -1734,16 +1747,29 @@ print_key_flags(int flags)
+ }
+ 
+ 
+-/* Ask for the key flags and return them.  CURRENT gives the current
+- * usage which should normally be given as 0.  MASK gives the allowed
+- * flags.  */
++/* Ask for the key flags and return them. The algo, OID and the
++ * current flag values (see ask_key_algo_flags() below) are taken
++ * from the given pk structre. */
+ unsigned int
+-ask_key_flags_with_mask (int algo, int subkey, unsigned int current,
+-                         unsigned int mask)
++ask_pk_key_flags (const PKT_public_key *pk, int subkey)
++{
++    char *oidstr = openpgp_oid_to_str (pk->pkey[0]);
++    int ret = ask_key_algo_flags (pk->pubkey_algo, oidstr, subkey,
++                                  pk->pubkey_usage);
++    xfree (oidstr);
++	return ret;
++}
++
++/* Ask for the key flags and return them. CURRENT gives the current
++ * usage which should normally be given as 0. MASK gives the allowed
++ * flags. The OIDSTR helps detecting key usage. */
++unsigned int
++ask_key_algo_flags_with_mask (int algo, const char *oidstr, int subkey,
++                              unsigned int current, unsigned int mask)
+ {
+   /* TRANSLATORS: Please use only plain ASCII characters for the
+    * translation.  If this is not possible use single digits.  The
+-   * string needs to 8 bytes long. Here is a description of the
++   * string needs to be 8 bytes long. Here is a description of the
+    * functions:
+    *
+    *   s = Toggle signing capability
+@@ -1754,7 +1780,7 @@ ask_key_flags_with_mask (int algo, int subkey, unsigned int current,
+   const char *togglers = _("SsEeAaQq");
+   char *answer = NULL;
+   const char *s;
+-  unsigned int possible;
++  unsigned int possible = openpgp_pk_algo_oid_usage( algo, oidstr );
+ 
+   if ( strlen(togglers) != 8 )
+     {
+@@ -1868,6 +1894,22 @@ ask_key_flags_with_mask (int algo, int subkey, unsigned int current,
+   return current;
+ }
+ 
++unsigned int
++ask_key_algo_flags (int algo, const char *oidstr, int subkey,
++                    unsigned int current)
++{
++  return ask_key_algo_flags_with_mask (algo, oidstr, subkey, current, ~0);
++}
++
++/* Ask for the key flags and return them.  CURRENT gives the current
++ * usage which should normally be given as 0.  MASK gives the allowed
++ * flags.  */
++unsigned int
++ask_key_flags_with_mask (int algo, int subkey, unsigned int current,
++                         unsigned int mask)
++{
++	return ask_key_algo_flags_with_mask (algo, NULL, subkey, current, mask);
++}
+ 
+ unsigned int
+ ask_key_flags (int algo, int subkey, unsigned int current)
+@@ -1875,11 +1917,10 @@ ask_key_flags (int algo, int subkey, unsigned int current)
+   return ask_key_flags_with_mask (algo, subkey, current, ~0);
+ }
+ 
+-
+ /* Check whether we have a key for the key with HEXGRIP.  Returns 0 if
+    there is no such key or the OpenPGP algo number for the key.  */
+ static int
+-check_keygrip (ctrl_t ctrl, const char *hexgrip)
++check_keygrip (ctrl_t ctrl, const char *hexgrip, const char **r_oidstr)
+ {
+   gpg_error_t err;
+   unsigned char *public;
+@@ -1894,7 +1935,15 @@ check_keygrip (ctrl_t ctrl, const char *hexgrip)
+     return 0;
+   publiclen = gcry_sexp_canon_len (public, 0, NULL, NULL);
+ 
+-  algo = get_pk_algo_from_canon_sexp (public, publiclen);
++  char *oidstr = NULL;
++  algo = get_pk_info_from_canon_sexp (public, publiclen, NULL,
++                                      r_oidstr ? &oidstr : NULL,
++                                      NULL);
++
++  if (r_oidstr && oidstr)
++    *r_oidstr = openpgp_curve_to_oid (oidstr, NULL);
++
++  xfree (oidstr);
+   xfree (public);
+ 
+   return map_pk_gcry_to_openpgp (algo);
+@@ -1912,13 +1961,14 @@ check_keygrip (ctrl_t ctrl, const char *hexgrip)
+  * it. */
+ static int
+ ask_algo (ctrl_t ctrl, int addmode, int *r_subkey_algo, unsigned int *r_usage,
+-          char **r_keygrip)
++          char **r_keygrip, const char **r_oidstr)
+ {
+   gpg_error_t err;
+   char *keygrip = NULL;
+   char *answer = NULL;
+   int algo;
+   int dummy_algo;
++  const char *oidstr = NULL;
+   char *p;
+ 
+   if (!r_subkey_algo)
+@@ -2026,13 +2076,13 @@ ask_algo (ctrl_t ctrl, int addmode, int *r_subkey_algo, unsigned int *r_usage,
+       else if ((algo == 7 || !strcmp (answer, "dsa/*")) && opt.expert)
+         {
+           algo = PUBKEY_ALGO_DSA;
+-          *r_usage = ask_key_flags (algo, addmode, 0);
++          *r_usage = ask_key_algo_flags (algo, NULL, addmode, 0);
+           break;
+ 	}
+       else if ((algo == 8 || !strcmp (answer, "rsa/*")) && opt.expert)
+         {
+           algo = PUBKEY_ALGO_RSA;
+-          *r_usage = ask_key_flags (algo, addmode, 0);
++          *r_usage = ask_key_algo_flags (algo, NULL, addmode, 0);
+           break;
+ 	}
+       else if ((algo == 9 || !strcmp (answer, "ecc+ecc"))
+@@ -2050,8 +2100,9 @@ ask_algo (ctrl_t ctrl, int addmode, int *r_subkey_algo, unsigned int *r_usage,
+ 	}
+       else if ((algo == 11 || !strcmp (answer, "ecc/*")) && opt.expert)
+         {
+-          algo = PUBKEY_ALGO_ECDSA;
+-          *r_usage = ask_key_flags (algo, addmode, 0);
++          algo = PUBKEY_ALGO_ECDH;
++          oidstr = openpgp_curve_to_oid (ask_curve (&algo, NULL, NULL), NULL);
++          *r_usage = ask_key_algo_flags (algo, oidstr, addmode, 0);
+           break;
+ 	}
+       else if ((algo == 12 || !strcmp (answer, "ecc/e"))
+@@ -2081,7 +2132,7 @@ ask_algo (ctrl_t ctrl, int addmode, int *r_subkey_algo, unsigned int *r_usage,
+                        !(answer[0] == '&' && strlen (answer+1) == 40))
+                 tty_printf
+                   (_("Not a valid keygrip (expecting 40 hex digits)\n"));
+-              else if (!(algo = check_keygrip (ctrl, answer)) )
++              else if (!(algo = check_keygrip (ctrl, answer, &oidstr)) )
+                 tty_printf (_("No key with this keygrip\n"));
+               else
+                 break; /* Okay.  */
+@@ -2089,7 +2140,9 @@ ask_algo (ctrl_t ctrl, int addmode, int *r_subkey_algo, unsigned int *r_usage,
+           xfree (keygrip);
+           keygrip = answer;
+           answer = NULL;
+-          *r_usage = ask_key_flags (algo, addmode, 0);
++          *r_usage = ask_key_algo_flags (algo, oidstr, addmode, 0);
++		  if (r_oidstr && oidstr)
++			*r_oidstr = oidstr;
+           break;
+ 	}
+       else if ((algo == 14 || !strcmp (answer, "cardkey")) && r_keygrip)
+@@ -2223,8 +2276,12 @@ ask_algo (ctrl_t ctrl, int addmode, int *r_subkey_algo, unsigned int *r_usage,
+     }
+ 
+   xfree(answer);
++
+   if (r_keygrip)
+     *r_keygrip = keygrip;
++  if (r_oidstr && oidstr)
++      *r_oidstr = oidstr;
++
+   return algo;
+ }
+ 
+@@ -2395,138 +2452,180 @@ ask_curve (int *algo, int *subkey_algo, const char *current)
+     unsigned int de_vs : 1;       /* Allowed in CO_DE_VS.  */
+     unsigned int expert_only : 1; /* Only with --expert    */
+     unsigned int available : 1;   /* Available in Libycrypt (runtime checked) */
++    unsigned int final : 1;       /* Final selection */
++    unsigned int level;           /* Sub-selection level */
+   } curves[] = {
+ #if GPG_USE_ECDSA || GPG_USE_ECDH
+ # define MY_USE_ECDSADH 1
+ #else
+ # define MY_USE_ECDSADH 0
+ #endif
+-    { "Curve25519",      "Ed25519", "Curve 25519", !!GPG_USE_EDDSA, 0, 0, 0 },
+-    { "Curve448",        "Ed448",   "Curve 448",   0/*reserved*/  , 0, 1, 0 },
+-    { "NIST P-256",      NULL, NULL,               MY_USE_ECDSADH,  0, 1, 0 },
+-    { "NIST P-384",      NULL, NULL,               MY_USE_ECDSADH,  0, 0, 0 },
+-    { "NIST P-521",      NULL, NULL,               MY_USE_ECDSADH,  0, 1, 0 },
+-    { "brainpoolP256r1", NULL, "Brainpool P-256",  MY_USE_ECDSADH,  1, 1, 0 },
+-    { "brainpoolP384r1", NULL, "Brainpool P-384",  MY_USE_ECDSADH,  1, 1, 0 },
+-    { "brainpoolP512r1", NULL, "Brainpool P-512",  MY_USE_ECDSADH,  1, 1, 0 },
+-    { "secp256k1",       NULL, NULL,               MY_USE_ECDSADH,  0, 1, 0 },
++    { "Curve25519", "Ed25519", "Ed* (25519, 448)", !!GPG_USE_EDDSA, 0, 0, 0, 0, 0 },
++    { "Curve25519", "Ed25519", "Curve 25519", !!GPG_USE_EDDSA, 0, 0, 0, 1, 1 },
++    { "Curve448",   "Ed448",   "Curve 448",   0/*reserved*/  , 0, 1, 0, 1, 1 },
++    { "NIST P-256",      NULL, "NIST-P",        MY_USE_ECDSADH,  0, 1, 0, 0, 0 },
++    { "NIST P-256",      NULL, NULL,            MY_USE_ECDSADH,  0, 1, 0, 1, 1 },
++    { "NIST P-384",      NULL, NULL,            MY_USE_ECDSADH,  0, 0, 0, 1, 1 },
++    { "NIST P-521",      NULL, NULL,            MY_USE_ECDSADH,  0, 1, 0, 1, 1 },
++    { "brainpoolP256r1", NULL, "Brainpool P",   MY_USE_ECDSADH,  1, 1, 0, 0, 0 },
++    { "brainpoolP256r1", NULL, "Brainpool P-256",  MY_USE_ECDSADH,  1, 1, 0, 1, 1 },
++    { "brainpoolP384r1", NULL, "Brainpool P-384",  MY_USE_ECDSADH,  1, 1, 0, 1, 1 },
++    { "brainpoolP512r1", NULL, "Brainpool P-512",  MY_USE_ECDSADH,  1, 1, 0, 1, 1 },
++    { "secp256k1",       NULL, NULL,               MY_USE_ECDSADH,  0, 1, 0, 1, 0 },
++    { "GOST2012-256-A", NULL, "GOST-R.3410", MY_USE_ECDSADH,  0, 1, 0, 0, 0 },
++    { "GOST2012-256-A", NULL, "GOST-R.3410-2012-256-A", MY_USE_ECDSADH,  0, 1, 0, 1, 1 },
++    { "GOST2012-256-B", NULL, "GOST-R.3410-2012-256-B", MY_USE_ECDSADH,  0, 1, 0, 1, 1 },
++    { "GOST2012-256-C", NULL, "GOST-R.3410-2012-256-C", MY_USE_ECDSADH,  0, 1, 0, 1, 1 },
++    { "GOST2012-256-D", NULL, "GOST-R.3410-2012-256-D", MY_USE_ECDSADH,  0, 1, 0, 1, 1 },
++    { "GOST2012-512-A", NULL, "GOST-R.3410-2012-512-A", MY_USE_ECDSADH,  0, 1, 0, 1, 1 },
++    { "GOST2012-512-B", NULL, "GOST-R.3410-2012-512-B", MY_USE_ECDSADH,  0, 1, 0, 1, 1 },
++    { "GOST2001-CryptoPro-A", NULL, "GOST-R.3410-2001-A", MY_USE_ECDSADH,  0, 1, 0, 1, 1 },
++    { "GOST2001-CryptoPro-B", NULL, "GOST-R.3410-2001-B", MY_USE_ECDSADH,  0, 1, 0, 1, 1 },
++    { "GOST2001-CryptoPro-C", NULL, "GOST-R.3410-2001-C", MY_USE_ECDSADH,  0, 1, 0, 1, 1 },
++    { "GOST2001-CryptoPro-XchA", NULL, "GOST-R.3410-2001-XchA", MY_USE_ECDSADH,  0, 1, 0, 1, 1 },
++    { "GOST2001-CryptoPro-XchB", NULL, "GOST-R.3410-2001-XchA", MY_USE_ECDSADH,  0, 1, 0, 1, 1 },
+   };
+ #undef MY_USE_ECDSADH
+-  int idx;
++
++  int idx = -1;
+   char *answer;
+   const char *result = NULL;
+   gcry_sexp_t keyparms;
+ 
+-  tty_printf (_("Please select which elliptic curve you want:\n"));
++  tty_printf (_("Please select which elliptic curve type you want:\n"));
+ 
+-  keyparms = NULL;
+-  for (idx=0; idx < DIM(curves); idx++)
++  int start_idx = 0;
++  int level = 0;
++  while (idx < 0 || !curves[idx].final)
+     {
+-      int rc;
++      keyparms = NULL;
++      for (idx = start_idx; idx < DIM(curves); idx++)
++        {
++          int rc;
+ 
+-      curves[idx].available = 0;
+-      if (!curves[idx].supported)
+-        continue;
++          if (curves[idx].level < level)
++            break;
+ 
+-      if (opt.compliance==CO_DE_VS)
+-        {
+-          if (!curves[idx].de_vs)
+-            continue; /* Not allowed.  */
+-        }
+-      else if (!opt.expert && curves[idx].expert_only)
+-        continue;
++          if (curves[idx].level > level)
++            continue;
+ 
+-      /* We need to switch from the ECDH name of the curve to the
+-         EDDSA name of the curve if we want a signing key.  */
+-      gcry_sexp_release (keyparms);
+-      rc = gcry_sexp_build (&keyparms, NULL,
+-                            "(public-key(ecc(curve %s)))",
+-                            curves[idx].eddsa_curve? curves[idx].eddsa_curve
+-                            /**/                   : curves[idx].name);
+-      if (rc)
+-        continue;
+-      if (!gcry_pk_get_curve (keyparms, 0, NULL))
+-        continue;
+-      if (subkey_algo && curves[idx].eddsa_curve)
+-        {
+-          /* Both Curve 25519 (or 448) keys are to be created.  Check that
+-             Libgcrypt also supports the real Curve25519 (or 448).  */
++          curves[idx].available = 0;
++          if (!curves[idx].supported)
++            continue;
++
++          if (opt.compliance==CO_DE_VS)
++            {
++              if (!curves[idx].de_vs)
++                continue; /* Not allowed.  */
++            }
++          else if (!opt.expert && curves[idx].expert_only)
++            continue;
++
++          /* We need to switch from the ECDH name of the curve to the
++             EDDSA name of the curve if we want a signing key.  */
+           gcry_sexp_release (keyparms);
+           rc = gcry_sexp_build (&keyparms, NULL,
+                                 "(public-key(ecc(curve %s)))",
+-                                 curves[idx].name);
++                                curves[idx].eddsa_curve? curves[idx].eddsa_curve
++                                /**/                   : curves[idx].name);
+           if (rc)
+             continue;
+           if (!gcry_pk_get_curve (keyparms, 0, NULL))
+             continue;
+-        }
+-
+-      curves[idx].available = 1;
+-      tty_printf ("   (%d) %s\n", idx + 1,
+-                  curves[idx].pretty_name?
+-                  curves[idx].pretty_name:curves[idx].name);
+-    }
+-  gcry_sexp_release (keyparms);
+-
+-
+-  for (;;)
+-    {
+-      answer = cpr_get ("keygen.curve", _("Your selection? "));
+-      cpr_kill_prompt ();
+-      idx = *answer? atoi (answer) : 1;
+-      if (!*answer && current)
+-        {
+-          xfree(answer);
+-          return NULL;
+-        }
+-      else if (*answer && !idx)
+-        {
+-          /* See whether the user entered the name of the curve.  */
+-          for (idx=0; idx < DIM(curves); idx++)
++          if (subkey_algo && curves[idx].eddsa_curve)
+             {
+-              if (!opt.expert && curves[idx].expert_only)
++              /* Both Curve 25519 (or 448) keys are to be created.  Check that
++                 Libgcrypt also supports the real Curve25519 (or 448).  */
++              gcry_sexp_release (keyparms);
++              rc = gcry_sexp_build (&keyparms, NULL,
++                                    "(public-key(ecc(curve %s)))",
++                                    curves[idx].name);
++              if (rc)
++                continue;
++              if (!gcry_pk_get_curve (keyparms, 0, NULL))
+                 continue;
+-              if (!stricmp (curves[idx].name, answer)
+-                  || (curves[idx].pretty_name
+-                      && !stricmp (curves[idx].pretty_name, answer)))
+-                break;
+             }
+-          if (idx == DIM(curves))
+-            idx = -1;
++
++          curves[idx].available = 1;
++          tty_printf ("   (%d) %s\n", idx + 1,
++                      curves[idx].pretty_name?
++                      curves[idx].pretty_name:curves[idx].name);
+         }
+-      else
+-        idx--;
+-      xfree(answer);
+-      answer = NULL;
+-      if (idx < 0 || idx >= DIM (curves) || !curves[idx].available)
+-        tty_printf (_("Invalid selection.\n"));
+-      else
++      gcry_sexp_release (keyparms);
++
++      for (;;)
+         {
+-          /* If the user selected a signing algorithm and Curve25519
+-             we need to set the algo to EdDSA and update the curve name.
+-             If switching away from EdDSA, we need to set the algo back
+-             to ECDSA. */
+-          if (*algo == PUBKEY_ALGO_ECDSA || *algo == PUBKEY_ALGO_EDDSA)
++          answer = cpr_get ("keygen.curve", _("Your selection? "));
++          cpr_kill_prompt ();
++          idx = *answer? atoi (answer) : 1;
++          if (!*answer && current)
++            {
++              xfree(answer);
++              return NULL;
++            }
++          else if (*answer && !idx)
+             {
+-              if (curves[idx].eddsa_curve)
++              /* See whether the user entered the name of the curve.  */
++              for (idx=0; idx < DIM(curves); idx++)
+                 {
+-                  if (subkey_algo && *subkey_algo == PUBKEY_ALGO_ECDSA)
+-                    *subkey_algo = PUBKEY_ALGO_EDDSA;
+-                  *algo = PUBKEY_ALGO_EDDSA;
+-                  result = curves[idx].eddsa_curve;
++                  if (!opt.expert && curves[idx].expert_only)
++                    continue;
++                  if (!stricmp (curves[idx].name, answer)
++                      || (curves[idx].pretty_name
++                          && !stricmp (curves[idx].pretty_name, answer)))
++                    break;
++                }
++              if (idx == DIM(curves))
++                idx = -1;
++            }
++          else
++            idx--;
++
++          xfree(answer);
++          answer = NULL;
++
++          if (idx < 0 || idx >= DIM (curves) || !curves[idx].available)
++            tty_printf (_("Invalid selection.\n"));
++          else
++            {
++              if (curves[idx].final)
++                {
++                  /* If the user selected a signing algorithm and Curve25519
++                     we need to set the algo to EdDSA and update the curve name.
++                     If switching away from EdDSA, we need to set the algo back
++                     to ECDSA. */
++                  if (*algo == PUBKEY_ALGO_ECDSA || *algo == PUBKEY_ALGO_EDDSA)
++                    {
++                      if (curves[idx].eddsa_curve)
++                        {
++                          if (subkey_algo && *subkey_algo == PUBKEY_ALGO_ECDSA)
++                            *subkey_algo = PUBKEY_ALGO_EDDSA;
++                          *algo = PUBKEY_ALGO_EDDSA;
++                          result = curves[idx].eddsa_curve;
++                        }
++                      else
++                        {
++                          if (subkey_algo && *subkey_algo == PUBKEY_ALGO_EDDSA)
++                            *subkey_algo = PUBKEY_ALGO_ECDSA;
++                          *algo = PUBKEY_ALGO_ECDSA;
++                          result = curves[idx].name;
++                        }
++                    }
++                  else
++                    result = curves[idx].name;
+                 }
+               else
+                 {
+-                  if (subkey_algo && *subkey_algo == PUBKEY_ALGO_EDDSA)
+-                    *subkey_algo = PUBKEY_ALGO_ECDSA;
+-                  *algo = PUBKEY_ALGO_ECDSA;
+-                  result = curves[idx].name;
++                  level++;
++                  start_idx = idx + 1;
+                 }
++
++              break;
+             }
+-          else
+-            result = curves[idx].name;
+-          break;
+         }
++
++      if (idx == -1 || !curves[idx].final)
++        tty_printf (_("Continue with curve selection:\n"));
+     }
+ 
+   if (!result)
+@@ -3783,6 +3882,8 @@ proc_parameter_file (ctrl_t ctrl, struct para_data_s *para, const char *fname,
+   int is_default = 0;
+   int have_user_id = 0;
+   int err, algo;
++  const char *curve;
++  const char *prefs = NULL;
+ 
+   /* Check that we have all required parameters. */
+   r = get_parameter( para, pKEYTYPE );
+@@ -3801,6 +3902,8 @@ proc_parameter_file (ctrl_t ctrl, struct para_data_s *para, const char *fname,
+       return -1;
+     }
+ 
++  curve = get_parameter_value( para, pKEYCURVE );
++
+   err = parse_parameter_usage (fname, para, pKEYUSAGE);
+   if (!err)
+     {
+@@ -3810,7 +3913,7 @@ proc_parameter_file (ctrl_t ctrl, struct para_data_s *para, const char *fname,
+       r->key = pKEYUSAGE;
+       r->u.usage = (is_default
+                     ? (PUBKEY_USAGE_CERT | PUBKEY_USAGE_SIG)
+-                    : openpgp_pk_algo_usage(algo));
++                    : openpgp_pk_algo_oid_usage (algo, curve ? openpgp_curve_to_oid (curve, NULL) : NULL));
+       append_to_parameter (para, r);
+     }
+   else if (err == -1)
+@@ -3818,7 +3921,7 @@ proc_parameter_file (ctrl_t ctrl, struct para_data_s *para, const char *fname,
+   else
+     {
+       r = get_parameter (para, pKEYUSAGE);
+-      if (r && (r->u.usage & ~openpgp_pk_algo_usage (algo)))
++      if (r && (r->u.usage & ~openpgp_pk_algo_oid_usage (algo, curve ? openpgp_curve_to_oid (curve, NULL) : NULL)))
+         {
+           log_error ("%s:%d: specified Key-Usage not allowed for algo %d\n",
+                      fname, r->lnr, algo);
+@@ -3826,35 +3929,61 @@ proc_parameter_file (ctrl_t ctrl, struct para_data_s *para, const char *fname,
+         }
+     }
+ 
++  if (r->u.usage & PUBKEY_USAGE_ENC && curve
++      && 0 == strncmp (curve, "GOST2012", 8)
++      && !get_parameter_value( para, pPREFERENCES ))
++    {
++      char _prefs[256];
++      snprintf (_prefs, sizeof (_prefs), "S%d H%d H%d H%d",
++                CIPHER_ALGO_GOST28147,
++                DIGEST_ALGO_GOSTR3411_12_256,
++                DIGEST_ALGO_GOSTR3411_12_512,
++                DIGEST_ALGO_GOSTR3411_94);
++      prefs = _prefs;
++    }
++  else if (r->u.usage & PUBKEY_USAGE_ENC && curve
++      && 0 == strncmp (curve, "GOST2001", 8)
++      && !get_parameter_value( para, pPREFERENCES ))
++    {
++      char _prefs[256];
++      snprintf (_prefs, sizeof (_prefs), "S%d H%d",
++                CIPHER_ALGO_GOST28147,
++                DIGEST_ALGO_GOSTR3411_94);
++      prefs = _prefs;
++    }
++
+   is_default = 0;
+   r = get_parameter( para, pSUBKEYTYPE );
+   if(r)
+     {
+       algo = get_parameter_algo (ctrl, para, pSUBKEYTYPE, &is_default);
+       if (openpgp_pk_test_algo (algo))
+-	{
+-	  log_error ("%s:%d: invalid algorithm\n", fname, r->lnr );
+-	  return -1;
+-	}
++        {
++            log_error ("%s:%d: invalid algorithm\n", fname, r->lnr );
++            return -1;
++        }
++
++      // FIXME: Set pSUBKEYCURVE value somewhere
++      curve = get_parameter_value( para, pSUBKEYCURVE );
+ 
+       err = parse_parameter_usage (fname, para, pSUBKEYUSAGE);
+       if (!err)
+-	{
+-	  /* Default to algo capabilities if subkey-usage is not
+-	     provided */
+-	  r = xmalloc_clear (sizeof(*r));
+-	  r->key = pSUBKEYUSAGE;
+-	  r->u.usage = (is_default
+-                        ? PUBKEY_USAGE_ENC
+-                        : openpgp_pk_algo_usage (algo));
+-          append_to_parameter (para, r);
+-	}
++        {
++            /* Default to algo capabilities if subkey-usage is not
++               provided */
++            r = xmalloc_clear (sizeof(*r));
++            r->key = pSUBKEYUSAGE;
++            r->u.usage = (is_default
++                          ? PUBKEY_USAGE_ENC
++                          : openpgp_pk_algo_oid_usage (algo, curve ? openpgp_curve_to_oid (curve, NULL) : NULL));
++            append_to_parameter (para, r);
++        }
+       else if (err == -1)
+-	return -1;
++          return -1;
+       else
+         {
+           r = get_parameter (para, pSUBKEYUSAGE);
+-          if (r && (r->u.usage & ~openpgp_pk_algo_usage (algo)))
++          if (r && (r->u.usage & ~openpgp_pk_algo_oid_usage (algo, curve ? openpgp_curve_to_oid (curve, NULL) : NULL)))
+             {
+               log_error ("%s:%d: specified Subkey-Usage not allowed"
+                          " for algo %d\n", fname, r->lnr, algo);
+@@ -3903,7 +4032,7 @@ proc_parameter_file (ctrl_t ctrl, struct para_data_s *para, const char *fname,
+     }
+ 
+   /* Set preferences, if any. */
+-  keygen_set_std_prefs(get_parameter_value( para, pPREFERENCES ), 0);
++  keygen_set_std_prefs(prefs, 0);
+ 
+   /* Set keyserver, if any. */
+   s1=get_parameter_value( para, pKEYSERVER );
+@@ -4550,8 +4679,9 @@ generate_keypair (ctrl_t ctrl, int full, const char *fname,
+     {
+       int subkey_algo;
+       char *key_from_hexgrip = NULL;
++      const char *oidstr = NULL;
+ 
+-      algo = ask_algo (ctrl, 0, &subkey_algo, &use, &key_from_hexgrip);
++      algo = ask_algo (ctrl, 0, &subkey_algo, &use, &key_from_hexgrip, &oidstr);
+       if (key_from_hexgrip)
+         {
+           r = xmalloc_clear( sizeof *r + 20 );
+@@ -4578,11 +4708,26 @@ generate_keypair (ctrl_t ctrl, int full, const char *fname,
+           r->next = para;
+           para = r;
+ 
++          if ( oidstr )
++            {
++                const char *oid_curve = openpgp_oid_to_curve (oidstr, 1);
++                if ( oid_curve )
++                  {
++                      r = xmalloc_clear (sizeof *r + strlen(oid_curve));
++                      r->key = pKEYCURVE;
++                      strcpy (r->u.value, oid_curve);
++                      r->next = para;
++                      para = r;
++                  }
++            }
++
+           xfree (key_from_hexgrip);
+         }
+       else
+         {
+           const char *curve = NULL;
++          if (oidstr)
++            curve = openpgp_oid_to_curve (oidstr, 1);
+ 
+           if (subkey_algo)
+             {
+@@ -4592,7 +4737,8 @@ generate_keypair (ctrl_t ctrl, int full, const char *fname,
+                   || algo == PUBKEY_ALGO_EDDSA
+                   || algo == PUBKEY_ALGO_ECDH)
+                 {
+-                  curve = ask_curve (&algo, &subkey_algo, NULL);
++                  if (!curve)
++                    curve = ask_curve (&algo, &subkey_algo, NULL);
+                   r = xmalloc_clear( sizeof *r + 20 );
+                   r->key = pKEYTYPE;
+                   sprintf( r->u.value, "%d", algo);
+@@ -4662,7 +4808,8 @@ generate_keypair (ctrl_t ctrl, int full, const char *fname,
+                   || algo == PUBKEY_ALGO_EDDSA
+                   || algo == PUBKEY_ALGO_ECDH)
+                 {
+-                  curve = ask_curve (&algo, NULL, NULL);
++                  if (!curve)
++                    curve = ask_curve (&algo, NULL, NULL);
+                   r = xmalloc_clear (sizeof *r + strlen (curve));
+                   r->key = pKEYCURVE;
+                   strcpy (r->u.value, curve);
+@@ -4747,7 +4894,6 @@ generate_keypair (ctrl_t ctrl, int full, const char *fname,
+       xfree (subkeygrip);
+     }
+ 
+-
+   expire = full? ask_expire_interval (0, NULL)
+                : parse_expire_string (default_expiration_interval);
+   r = xcalloc (1, sizeof *r + 20);
+@@ -5277,7 +5423,7 @@ parse_algo_usage_expire (ctrl_t ctrl, int for_subkey,
+   if (algostr && *algostr == '&' && strlen (algostr) == 41)
+     {
+       /* Take algo from existing key.  */
+-      algo = check_keygrip (ctrl, algostr+1);
++      algo = check_keygrip (ctrl, algostr+1, NULL);
+       /* FIXME: We need the curve name as well.  */
+       return gpg_error (GPG_ERR_NOT_IMPLEMENTED);
+     }
+@@ -5438,15 +5584,23 @@ generate_subkeypair (ctrl_t ctrl, kbnode_t keyblock, const char *algostr,
+ 
+   if (interactive)
+     {
+-      algo = ask_algo (ctrl, 1, NULL, &use, &key_from_hexgrip);
++      const char *oidstr;
++      algo = ask_algo (ctrl, 1, NULL, &use, &key_from_hexgrip, &oidstr);
+       log_assert (algo);
+ 
+       if (key_from_hexgrip)
+-        nbits = 0;
++        {
++          nbits = 0;
++          if ( oidstr )
++            curve = openpgp_oid_to_curve (oidstr, 1);
++        }
+       else if (algo == PUBKEY_ALGO_ECDSA
+                || algo == PUBKEY_ALGO_EDDSA
+                || algo == PUBKEY_ALGO_ECDH)
+-        curve = ask_curve (&algo, NULL, NULL);
++        {
++          if (!curve)
++            curve = ask_curve (&algo, NULL, NULL);
++        }
+       else
+         nbits = ask_keysize (algo, 0);
+ 
+diff --git a/g10/keylist.c b/g10/keylist.c
+index 13f27cb0a..3225496ce 100644
+--- a/g10/keylist.c
++++ b/g10/keylist.c
+@@ -2070,7 +2070,7 @@ print_key_line (ctrl_t ctrl, estream_t fp, PKT_public_key *pk, int secret)
+   tty_fprintf (fp, " %s", datestr_from_pk (pk));
+ 
+   if (pk->flags.primary
+-      && !(openpgp_pk_algo_usage (pk->pubkey_algo)
++      && !(openpgp_pk_usage (pk)
+            & (PUBKEY_USAGE_CERT| PUBKEY_USAGE_SIG|PUBKEY_USAGE_AUTH)))
+     {
+       /* A primary key which is really not capable to sign.  */
+diff --git a/g10/main.h b/g10/main.h
+index 90e164fda..0e3e10053 100644
+--- a/g10/main.h
++++ b/g10/main.h
+@@ -125,13 +125,19 @@ const char *openpgp_cipher_algo_name (cipher_algo_t algo);
+ pubkey_algo_t map_pk_gcry_to_openpgp (enum gcry_pk_algos algo);
+ int openpgp_pk_test_algo (pubkey_algo_t algo);
+ int openpgp_pk_test_algo2 (pubkey_algo_t algo, unsigned int use);
+-int openpgp_pk_algo_usage ( int algo );
++int openpgp_pk_usage (const PKT_public_key *pk);
++int openpgp_pk_algo_usage (int algo);
++int openpgp_pk_algo_oid_usage (int algo, const char *oidstr);
+ const char *openpgp_pk_algo_name (pubkey_algo_t algo);
+ 
+ enum gcry_md_algos map_md_openpgp_to_gcry (digest_algo_t algo);
++digest_algo_t map_md_gcry_to_openpgp (enum gcry_md_algos algo);
+ int openpgp_md_test_algo (digest_algo_t algo);
+ const char *openpgp_md_algo_name (int algo);
+ 
++enum gcry_mac_algos map_mac_openpgp_to_gcry (mac_algo_t algo);
++mac_algo_t map_mac_gcry_to_openpgp (enum gcry_mac_algos algo);
++
+ struct expando_args
+ {
+   PKT_public_key *pk;
+@@ -293,6 +299,9 @@ u32 parse_expire_string(const char *string);
+ u32 ask_expire_interval(int object,const char *def_expire);
+ u32 ask_expiredate(void);
+ unsigned int ask_key_flags (int algo, int subkey, unsigned int current);
++unsigned int ask_pk_key_flags (const PKT_public_key *pk, int subkey);
++unsigned int ask_key_algo_flags (int algo, const char *oidstr, int subkey,
++                                 unsigned int current);
+ const char *ask_curve (int *algo, int *subkey_algo, const char *current);
+ void quick_generate_keypair (ctrl_t ctrl, const char *uid, const char *algostr,
+                              const char *usagestr, const char *expirestr);
+diff --git a/g10/mainproc.c b/g10/mainproc.c
+index e9e886f59..8af089c7a 100644
+--- a/g10/mainproc.c
++++ b/g10/mainproc.c
+@@ -801,7 +801,7 @@ proc_plaintext( CTX c, PACKET *pkt )
+             {
+               if (!opt.skip_verify)
+                 gcry_md_enable (c->mfx.md,
+-                                n->pkt->pkt.onepass_sig->digest_algo);
++                                map_md_openpgp_to_gcry (n->pkt->pkt.onepass_sig->digest_algo));
+ 
+               any = 1;
+             }
+@@ -821,7 +821,7 @@ proc_plaintext( CTX c, PACKET *pkt )
+           clearsig = (*data == 0x01);
+           for (data++, datalen--; datalen; datalen--, data++)
+             if (!opt.skip_verify)
+-              gcry_md_enable (c->mfx.md, *data);
++              gcry_md_enable (c->mfx.md, *data); //FIXME: Map?
+           any = 1;
+           break;  /* Stop here as one-pass signature packets are not
+                      expected.  */
+@@ -830,7 +830,7 @@ proc_plaintext( CTX c, PACKET *pkt )
+         {
+           /* The SIG+LITERAL case that PGP used to use.  */
+           if (!opt.skip_verify)
+-            gcry_md_enable (c->mfx.md, n->pkt->pkt.signature->digest_algo);
++              gcry_md_enable (c->mfx.md, map_md_openpgp_to_gcry (n->pkt->pkt.signature->digest_algo));
+           any = 1;
+         }
+     }
+@@ -1067,9 +1067,9 @@ do_check_sig (CTX c, kbnode_t node, int *is_selfsig,
+ 
+   if (md_good)
+     {
+-      unsigned char *buffer = gcry_md_read (md_good, sig->digest_algo);
+-      sig->digest_len = gcry_md_get_algo_dlen (map_md_openpgp_to_gcry (algo));
+-      memcpy (sig->digest, buffer, sig->digest_len);
++        unsigned char *buffer = gcry_md_read (md_good, map_md_openpgp_to_gcry(sig->digest_algo));
++        sig->digest_len = gcry_md_get_algo_dlen (map_md_openpgp_to_gcry (algo));
++        memcpy (sig->digest, buffer, sig->digest_len);
+     }
+ 
+   gcry_md_close (md);
+@@ -2310,7 +2310,7 @@ check_sig_and_print (CTX c, kbnode_t node)
+           log_info (_("%s signature, digest algorithm %s%s%s\n"),
+                     sig->sig_class==0x00?_("binary"):
+                     sig->sig_class==0x01?_("textmode"):_("unknown"),
+-                    gcry_md_algo_name (sig->digest_algo),
++                    gcry_md_algo_name (map_md_openpgp_to_gcry (sig->digest_algo)),
+                     *pkstrbuf?_(", key algorithm "):"", pkstrbuf);
+         }
+ 
+@@ -2445,7 +2445,7 @@ proc_tree (CTX c, kbnode_t node)
+           /* Fixme: why looking for the signature packet and not the
+              one-pass packet?  */
+           for (n1 = node; (n1 = find_next_kbnode (n1, PKT_SIGNATURE));)
+-            gcry_md_enable (c->mfx.md, n1->pkt->pkt.signature->digest_algo);
++              gcry_md_enable (c->mfx.md, map_md_openpgp_to_gcry (n1->pkt->pkt.signature->digest_algo));
+ 
+           if (n1 && n1->pkt->pkt.onepass_sig->sig_class == 0x01)
+             use_textmode = 1;
+@@ -2547,7 +2547,7 @@ proc_tree (CTX c, kbnode_t node)
+         {
+           /* Detached signature */
+           free_md_filter_context (&c->mfx);
+-          rc = gcry_md_open (&c->mfx.md, sig->digest_algo, 0);
++          rc = gcry_md_open (&c->mfx.md, map_md_openpgp_to_gcry (sig->digest_algo), 0);
+           if (rc)
+             goto detached_hash_err;
+ 
+@@ -2572,10 +2572,10 @@ proc_tree (CTX c, kbnode_t node)
+                * signature has been created in textmode.  Note that we
+                * do not implement this for multiple signatures with
+                * different hash algorithms. */
+-              rc = gcry_md_open (&c->mfx.md2, sig->digest_algo, 0);
++                rc = gcry_md_open (&c->mfx.md2, map_md_openpgp_to_gcry (sig->digest_algo), 0);
+               if (rc)
+                 goto detached_hash_err;
+-	    }
++            }
+ 
+           /* Here we used to have another hack to work around a pgp
+            * 2 bug: It worked by not using the textmode for detached
+diff --git a/g10/misc.c b/g10/misc.c
+index 291d36f2d..fda2cae16 100644
+--- a/g10/misc.c
++++ b/g10/misc.c
+@@ -70,6 +70,7 @@
+ #include "../common/i18n.h"
+ #include "../common/zb32.h"
+ 
++#define GPG_USE_GOST 1
+ 
+ #ifdef ENABLE_SELINUX_HACKS
+ /* A object and a global variable to keep track of files marked as
+@@ -491,6 +492,9 @@ map_cipher_openpgp_to_gcry (cipher_algo_t algo)
+     case CIPHER_ALGO_CAMELLIA256: return GCRY_CIPHER_CAMELLIA256;
+ #else
+     case CIPHER_ALGO_CAMELLIA256: return 0;
++#endif
++#ifdef GPG_USE_GOST
++	case CIPHER_ALGO_GOST28147: return GCRY_CIPHER_GOST28147;
+ #endif
+     default: return 0;
+     }
+@@ -514,6 +518,7 @@ map_cipher_gcry_to_openpgp (enum gcry_cipher_algos algo)
+     case GCRY_CIPHER_CAMELLIA128: return CIPHER_ALGO_CAMELLIA128;
+     case GCRY_CIPHER_CAMELLIA192: return CIPHER_ALGO_CAMELLIA192;
+     case GCRY_CIPHER_CAMELLIA256: return CIPHER_ALGO_CAMELLIA256;
++    case GCRY_CIPHER_GOST28147:   return CIPHER_ALGO_GOST28147;
+     default: return 0;
+     }
+ }
+@@ -529,7 +534,14 @@ map_pk_gcry_to_openpgp (enum gcry_pk_algos algo)
+     case GCRY_PK_EDDSA:  return PUBKEY_ALGO_EDDSA;
+     case GCRY_PK_ECDSA:  return PUBKEY_ALGO_ECDSA;
+     case GCRY_PK_ECDH:   return PUBKEY_ALGO_ECDH;
+-    default: return algo < 110 ? (pubkey_algo_t)algo : 0;
++    default:
++        if ((int) algo < PUBKEY_ALGO_PRIVATE10)
++        return (pubkey_algo_t) algo;
++      else
++        {
++          log_debug ("Unknown GCRY PUBKEY algo number: %d\n", algo);
++          return 0;
++        }
+     }
+ }
+ 
+@@ -596,6 +608,7 @@ openpgp_cipher_algo_name (cipher_algo_t algo)
+     case CIPHER_ALGO_CAMELLIA128: return "CAMELLIA128";
+     case CIPHER_ALGO_CAMELLIA192: return "CAMELLIA192";
+     case CIPHER_ALGO_CAMELLIA256: return "CAMELLIA256";
++    case CIPHER_ALGO_GOST28147:   return "GOST28147";
+     case CIPHER_ALGO_NONE:
+     default: return "?";
+     }
+@@ -674,9 +687,23 @@ openpgp_pk_test_algo2 (pubkey_algo_t algo, unsigned int use)
+   return gcry_pk_algo_info (ga, GCRYCTL_TEST_ALGO, NULL, &use_buf);
+ }
+ 
++int
++openpgp_pk_usage ( const PKT_public_key *pk )
++{
++	char *oidstr = openpgp_oid_to_str (pk->pkey[0]);
++	int ret = openpgp_pk_algo_oid_usage (pk->pubkey_algo, oidstr);
++	xfree (oidstr);
++	return ret;
++}
+ 
+ int
+ openpgp_pk_algo_usage ( int algo )
++{
++	return openpgp_pk_algo_oid_usage ( algo, NULL );
++}
++
++int
++openpgp_pk_algo_oid_usage ( int algo, const char *oidstr )
+ {
+     int use = 0;
+ 
+@@ -687,7 +714,6 @@ openpgp_pk_algo_usage ( int algo )
+                  | PUBKEY_USAGE_ENC | PUBKEY_USAGE_AUTH);
+           break;
+       case PUBKEY_ALGO_RSA_E:
+-      case PUBKEY_ALGO_ECDH:
+           use = PUBKEY_USAGE_ENC;
+           break;
+       case PUBKEY_ALGO_RSA_S:
+@@ -706,6 +732,15 @@ openpgp_pk_algo_usage ( int algo )
+       case PUBKEY_ALGO_ECDSA:
+       case PUBKEY_ALGO_EDDSA:
+           use = PUBKEY_USAGE_CERT | PUBKEY_USAGE_SIG | PUBKEY_USAGE_AUTH;
++	case PUBKEY_ALGO_ECDH:
++		if (oidstr)
++		  {
++			  if (openpgp_oidstr_is_gost (oidstr))
++				{
++					use = PUBKEY_USAGE_CERT | PUBKEY_USAGE_SIG | PUBKEY_USAGE_AUTH | PUBKEY_USAGE_ENC;
++				}
++		  }
++		break;
+       default:
+           break;
+     }
+@@ -733,9 +768,7 @@ openpgp_pk_algo_name (pubkey_algo_t algo)
+     }
+ }
+ 
+-
+ /* Explicit mapping of OpenPGP digest algos to Libgcrypt.  */
+-/* FIXME: We do not yes use it everywhere.  */
+ enum gcry_md_algos
+ map_md_openpgp_to_gcry (digest_algo_t algo)
+ {
+@@ -773,11 +806,39 @@ map_md_openpgp_to_gcry (digest_algo_t algo)
+     case DIGEST_ALGO_SHA512: return GCRY_MD_SHA512;
+ #else
+     case DIGEST_ALGO_SHA512: return 0;
++#endif
++#ifdef GPG_USE_GOST
++    case DIGEST_ALGO_GOSTR3411_94: return GCRY_MD_GOSTR3411_CP;
++    case DIGEST_ALGO_GOSTR3411_12_256: return GCRY_MD_STRIBOG256;
++    case DIGEST_ALGO_GOSTR3411_12_512: return GCRY_MD_STRIBOG512;
++#else
++    case DIGEST_ALGO_GOSTR3411_94:
++    case DIGEST_ALGO_GOSTR3411_12_256:
++    case DIGEST_ALGO_GOSTR3411_12_512:
++      return 0;
+ #endif
+     default: return 0;
+     }
+ }
+ 
++digest_algo_t
++map_md_gcry_to_openpgp (enum gcry_md_algos algo)
++{
++  switch (algo)
++    {
++    case GCRY_MD_MD5: return DIGEST_ALGO_MD5;
++    case GCRY_MD_SHA1: return DIGEST_ALGO_SHA1;
++    case GCRY_MD_RMD160: return DIGEST_ALGO_RMD160;
++    case GCRY_MD_SHA256: return DIGEST_ALGO_SHA256;
++    case GCRY_MD_SHA384: return DIGEST_ALGO_SHA384;
++    case GCRY_MD_SHA512: return DIGEST_ALGO_SHA512;
++    case GCRY_MD_SHA224: return DIGEST_ALGO_SHA224;
++    case GCRY_MD_GOSTR3411_CP: return DIGEST_ALGO_GOSTR3411_94;
++    case GCRY_MD_STRIBOG256: return DIGEST_ALGO_GOSTR3411_12_256;
++    case GCRY_MD_STRIBOG512: return DIGEST_ALGO_GOSTR3411_12_512;
++    default: return 0;
++    }
++}
+ 
+ /* Return 0 if ALGO is suitable and implemented OpenPGP hash
+    algorithm.  */
+@@ -809,11 +870,66 @@ openpgp_md_algo_name (int algo)
+     case DIGEST_ALGO_SHA384: return "SHA384";
+     case DIGEST_ALGO_SHA512: return "SHA512";
+     case DIGEST_ALGO_SHA224: return "SHA224";
++    case DIGEST_ALGO_GOSTR3411_12_256: return "GOST3411-12-256";
++    case DIGEST_ALGO_GOSTR3411_12_512: return "GOST3411-12-512";
++    case DIGEST_ALGO_GOSTR3411_94: return "GOST3411-94";
+     }
+   return "?";
+ }
+ 
+ 
++enum gcry_mac_algos
++map_mac_openpgp_to_gcry (mac_algo_t algo)
++{
++  switch (algo)
++    {
++    case MAC_ALGO_HMAC_MD5: return GCRY_MAC_HMAC_MD5;
++    case MAC_ALGO_HMAC_SHA1: return GCRY_MAC_HMAC_SHA1;
++    case MAC_ALGO_HMAC_RMD160: return GCRY_MAC_HMAC_RMD160;
++    case MAC_ALGO_HMAC_SHA256: return GCRY_MAC_HMAC_SHA256;
++    case MAC_ALGO_HMAC_SHA512: return GCRY_MAC_HMAC_SHA512;
++    case MAC_ALGO_HMAC_SHA384: return GCRY_MAC_HMAC_SHA384;
++    case MAC_ALGO_HMAC_SHA224: return GCRY_MAC_HMAC_SHA224;
++#ifdef GPG_USE_GOST
++    case MAC_ALGO_HMAC_GOSTR3411_94:
++      return GCRY_MAC_HMAC_GOSTR3411_94;
++    case MAC_ALGO_HMAC_GOST3411_12_256:
++      return GCRY_MAC_HMAC_STRIBOG256;
++    case MAC_ALGO_HMAC_GOST3411_12_512:
++      return GCRY_MAC_HMAC_STRIBOG512;
++    case MAC_ALGO_GOST28147_IMIT:
++      return GCRY_MAC_GOST28147_IMIT;
++#else
++    case MAC_ALGO_HMAC_GOSTR3411_94:
++    case MAC_ALGO_HMAC_GOST3411_12_256:
++    case MAC_ALGO_HMAC_GOST3411_12_512:
++    case MAC_ALGO_GOST28147_IMIT:
++      return 0;
++#endif
++    default: return 0;
++    }
++}
++
++mac_algo_t
++map_mac_gcry_to_openpgp (enum gcry_mac_algos algo)
++{
++  switch (algo)
++    {
++    case GCRY_MAC_HMAC_MD5: return MAC_ALGO_HMAC_MD5;
++    case GCRY_MAC_HMAC_SHA1: return MAC_ALGO_HMAC_SHA1;
++    case GCRY_MAC_HMAC_RMD160: return MAC_ALGO_HMAC_RMD160;
++    case GCRY_MAC_HMAC_SHA256: return MAC_ALGO_HMAC_SHA256;
++    case GCRY_MAC_HMAC_SHA512: return MAC_ALGO_HMAC_SHA512;
++    case GCRY_MAC_HMAC_SHA384: return MAC_ALGO_HMAC_SHA384;
++    case GCRY_MAC_HMAC_SHA224: return MAC_ALGO_HMAC_SHA224;
++    case GCRY_MAC_HMAC_GOSTR3411_94: return MAC_ALGO_HMAC_GOSTR3411_94;
++    case GCRY_MAC_HMAC_STRIBOG256: return MAC_ALGO_HMAC_GOST3411_12_256;
++    case GCRY_MAC_HMAC_STRIBOG512: return MAC_ALGO_HMAC_GOST3411_12_512;
++    case GCRY_MAC_GOST28147_IMIT: return MAC_ALGO_GOST28147_IMIT;
++    default: return 0;
++    }
++}
++
+ static unsigned long
+ get_signature_count (PKT_public_key *pk)
+ {
+@@ -1148,9 +1264,10 @@ string_to_digest_algo (const char *string)
+ {
+   int val;
+ 
+-  /* FIXME: We should make use of our wrapper function and not assume
+-     that there is a 1 to 1 mapping between OpenPGP and Libgcrypt.  */
+   val = gcry_md_map_name (string);
++  if (val)
++    val = map_md_gcry_to_openpgp (val);
++
+   if (!val && string && (string[0]=='H' || string[0]=='h'))
+     {
+       char *endptr;
+@@ -1611,7 +1728,7 @@ pubkey_get_nsig (pubkey_algo_t algo)
+     case PUBKEY_ALGO_RSA_S:     return 1;
+     case PUBKEY_ALGO_ELGAMAL_E: return 0;
+     case PUBKEY_ALGO_DSA:       return 2;
+-    case PUBKEY_ALGO_ECDH:      return 0;
++    case PUBKEY_ALGO_ECDH:      return 2;
+     case PUBKEY_ALGO_ECDSA:     return 2;
+     case PUBKEY_ALGO_ELGAMAL:   return 2;
+     case PUBKEY_ALGO_EDDSA:     return 2;
+diff --git a/g10/pkclist.c b/g10/pkclist.c
+index 8d924ad5c..4d5a5256a 100644
+--- a/g10/pkclist.c
++++ b/g10/pkclist.c
+@@ -1465,6 +1465,11 @@ select_algo_from_prefs(PK_LIST pk_list, int preftype,
+       switch(preftype)
+ 	{
+ 	case PREFTYPE_SYM:
++		if ( pkr->pk->pubkey_algo == PUBKEY_ALGO_ECDH &&
++			 openpgp_oid_is_gost (pkr->pk->pkey[0]) )
++		{
++			return CIPHER_ALGO_GOST28147;
++		}
+ 	  /* IDEA is implicitly there for v3 keys with v3 selfsigs if
+ 	     --pgp2 mode is on.  This was a 2440 thing that was
+ 	     dropped from 4880 but is still relevant to GPG's 1991
+@@ -1475,6 +1480,11 @@ select_algo_from_prefs(PK_LIST pk_list, int preftype,
+ 	  break;
+ 
+ 	case PREFTYPE_HASH:
++		if ( pkr->pk->pubkey_algo == PUBKEY_ALGO_ECDH &&
++			 openpgp_oid_is_gost (pkr->pk->pkey[0]) )
++		{
++			return DIGEST_ALGO_GOSTR3411_94;
++		}
+ 	  /* While I am including this code for completeness, note
+ 	     that currently --pgp2 mode locks the hash at MD5, so this
+ 	     code will never even be called.  Even if the hash wasn't
+diff --git a/g10/pkglue.c b/g10/pkglue.c
+index 8021a94db..48d716ebf 100644
+--- a/g10/pkglue.c
++++ b/g10/pkglue.c
+@@ -57,7 +57,7 @@ pk_verify (pubkey_algo_t pkalgo, gcry_mpi_t hash,
+            gcry_mpi_t *data, gcry_mpi_t *pkey)
+ {
+   gcry_sexp_t s_sig, s_hash, s_pkey;
+-  int rc;
++  int rc = 0;
+   unsigned int neededfixedlen = 0;
+ 
+   /* Make a sexp from pkey.  */
+@@ -78,31 +78,52 @@ pk_verify (pubkey_algo_t pkalgo, gcry_mpi_t hash,
+       rc = gcry_sexp_build (&s_pkey, NULL,
+ 			    "(public-key(rsa(n%m)(e%m)))", pkey[0], pkey[1]);
+     }
+-  else if (pkalgo == PUBKEY_ALGO_ECDSA)
++  else if (pkalgo == PUBKEY_ALGO_ECDSA
++           || (pkalgo == PUBKEY_ALGO_ECDH
++               && openpgp_oid_is_gost (pkey[0])))
+     {
+-      char *curve = openpgp_oid_to_str (pkey[0]);
+-      if (!curve)
+-        rc = gpg_error_from_syserror ();
++      char *oidstr = openpgp_oid_to_str (pkey[0]);
++
++      if (!oidstr)
++          rc = gpg_error_from_syserror ();
+       else
+         {
+-          rc = gcry_sexp_build (&s_pkey, NULL,
+-                                "(public-key(ecdsa(curve %s)(q%m)))",
+-                                curve, pkey[1]);
+-          xfree (curve);
++          const char *curvename = oidstr;
++          const char *key_type = "ecdsa";
++          gcry_sexp_t flags = NULL;
++
++          if (openpgp_oid_is_gost (pkey[0]))
++            {
++              curvename = openpgp_oid_to_curve (oidstr, 1);
++			  key_type = "ecc";
++			  rc = gcry_sexp_build (&flags, NULL, "(flags %s)", "gost");
++			}
++
++          if (!rc)
++            {
++              rc = gcry_sexp_build (&s_pkey, NULL,
++                                    "(public-key(%s(curve %s)%S(q%m)))",
++                                    key_type, curvename, flags, pkey[1]);
++            }
++
++          gcry_sexp_release (flags);
+         }
++
++      xfree (oidstr);
+     }
+   else if (pkalgo == PUBKEY_ALGO_EDDSA)
+     {
+-      char *curve = openpgp_oid_to_str (pkey[0]);
+-      if (!curve)
++      char *oidstr = openpgp_oid_to_str (pkey[0]);
++      if (!oidstr)
+         rc = gpg_error_from_syserror ();
+       else
+         {
++          // FIXME: OID string is used as a curve name.
+           rc = gcry_sexp_build (&s_pkey, NULL,
+                                 "(public-key(ecc(curve %s)"
+                                 "(flags eddsa)(q%m)))",
+-                                curve, pkey[1]);
+-          xfree (curve);
++                                oidstr, pkey[1]);
++          xfree (oidstr);
+         }
+ 
+       if (openpgp_oid_is_ed25519 (pkey[0]))
+@@ -122,6 +143,13 @@ pk_verify (pubkey_algo_t pkalgo, gcry_mpi_t hash,
+                            hash))
+         BUG (); /* gcry_sexp_build should never fail.  */
+     }
++  else if (pkalgo == PUBKEY_ALGO_ECDH && openpgp_oid_is_gost (pkey[0]))
++    {
++      if (gcry_sexp_build (&s_hash, NULL,
++                           "(data(flags gost)(value %m))",
++                           hash))
++        BUG (); /* gcry_sexp_build should never fail.  */
++    }
+   else
+     {
+       if (gcry_sexp_build (&s_hash, NULL, "%m", hash))
+@@ -138,13 +166,18 @@ pk_verify (pubkey_algo_t pkalgo, gcry_mpi_t hash,
+         rc = gcry_sexp_build (&s_sig, NULL,
+                               "(sig-val(dsa(r%m)(s%m)))", data[0], data[1]);
+     }
+-  else if (pkalgo == PUBKEY_ALGO_ECDSA)
++  else if (pkalgo == PUBKEY_ALGO_ECDSA
++           || (pkalgo == PUBKEY_ALGO_ECDH
++               && openpgp_oid_is_gost (pkey[0])))
+     {
++      const char* sig_type = openpgp_oid_is_gost (pkey[0]) ? "gost" : "ecdsa";
++
+       if (!data[0] || !data[1])
+         rc = gpg_error (GPG_ERR_BAD_MPI);
+       else
+         rc = gcry_sexp_build (&s_sig, NULL,
+-                              "(sig-val(ecdsa(r%m)(s%m)))", data[0], data[1]);
++                              "(sig-val(%s(r%m)(s%m)))", sig_type,
++                              data[0], data[1]);
+     }
+   else if (pkalgo == PUBKEY_ALGO_EDDSA)
+     {
+@@ -244,6 +277,8 @@ pk_encrypt (pubkey_algo_t algo, gcry_mpi_t *resarr, gcry_mpi_t data,
+   gcry_sexp_t s_ciph = NULL;
+   gcry_sexp_t s_data = NULL;
+   gcry_sexp_t s_pkey = NULL;
++  gcry_mpi_t ukm = NULL;
++  unsigned int ukm_blen;
+   int rc;
+ 
+   /* Make a sexp from pkey.  */
+@@ -268,33 +303,48 @@ pk_encrypt (pubkey_algo_t algo, gcry_mpi_t *resarr, gcry_mpi_t data,
+   else if (algo == PUBKEY_ALGO_ECDH)
+     {
+       gcry_mpi_t k;
+-
+       rc = pk_ecdh_generate_ephemeral_key (pkey, &k);
+-      if (!rc)
+-        {
+-          char *curve;
+ 
+-          curve = openpgp_oid_to_str (pkey[0]);
+-          if (!curve)
+-            rc = gpg_error_from_syserror ();
+-          else
++      if (openpgp_oid_is_gost (pkey[0]))
++        {
++          rc = pk_gost_generate_ukm (pkey, &ukm, &ukm_blen);
++          if (!rc)
+             {
+-              int with_djb_tweak_flag = openpgp_oid_is_cv25519 (pkey[0]);
+ 
+-              /* Now use the ephemeral secret to compute the shared point.  */
+-              rc = gcry_sexp_build (&s_pkey, NULL,
+-                                    with_djb_tweak_flag ?
+-                                    "(public-key(ecdh(curve%s)(flags djb-tweak)(q%m)))"
+-                                    : "(public-key(ecdh(curve%s)(q%m)))",
+-                                    curve, pkey[1]);
+-              xfree (curve);
+-              /* Put K into a simplified S-expression.  */
+-              if (!rc)
+-                rc = gcry_sexp_build (&s_data, NULL, "%m", k);
++              gcry_mpi_lshift (k, k, ukm_blen);
++              gcry_mpi_add (k, k, ukm);
++              rc = gcry_sexp_build (&s_data, NULL, "(data(flags gost)(value %m)(salt-length %u))", k, ukm_blen);
+             }
+-          gcry_mpi_release (k);
+         }
+-    }
++      else if (!rc)
++        rc = gcry_sexp_build (&s_data, NULL, "%m", k);
++
++      gcry_mpi_release (k);
++
++      if (!rc) {
++        char *curve = openpgp_oid_to_str (pkey[0]);
++        if (!curve) {
++          rc = gpg_error_from_syserror ();
++        } else {
++          gcry_sexp_t flags = NULL;
++          if (openpgp_oid_is_cv25519 (pkey[0])) {
++            rc = gcry_sexp_build (&flags, NULL, "(flags %s)",
++                                  "djb-tweak");
++          } else if (openpgp_oid_is_gost (pkey[0])) {
++            rc = gcry_sexp_build (&flags, NULL, "(flags %s)",
++                                  "gost");
++          }
++
++          if (!rc) {
++            rc = gcry_sexp_build (&s_pkey, NULL,
++                                  "(public-key(ecdh(curve%s)%S(q%m)))",
++                                  curve, flags, pkey[1]);
++          }
++          gcry_sexp_release (flags);
++          xfree (curve);
++        }
++      }
++	}
+   else
+     rc = gpg_error (GPG_ERR_PUBKEY_ALGO);
+ 
+@@ -318,21 +368,36 @@ pk_encrypt (pubkey_algo_t algo, gcry_mpi_t *resarr, gcry_mpi_t data,
+       public = get_mpi_from_sexp (s_ciph, "e", GCRYMPI_FMT_USG);
+       gcry_sexp_release (s_ciph);
+       s_ciph = NULL;
++
+       if (DBG_CRYPTO)
+         {
+-          log_debug ("ECDH ephemeral key:");
++          log_debug ("ECDH/GOST ephemeral key:");
+           gcry_mpi_dump (public);
+           log_printf ("\n");
+         }
+ 
+       result = NULL;
+-      fingerprint_from_pk (pk, fp, &fpn);
+-      if (fpn != 20)
+-        rc = gpg_error (GPG_ERR_INV_LENGTH);
++      if (openpgp_oid_is_gost (pkey[0]))
++        {
++          rc = pk_gost_encrypt_with_shared_point (shared, ukm, data, pkey,
++                                                  &result);
++          if (!rc)
++            {
++              /* Combine: ephemeral pubkey value + UKM */
++              gcry_mpi_lshift (public, public, ukm_blen);
++              gcry_mpi_add (public, public, ukm);
++            }
++        }
+       else
+-        rc = pk_ecdh_encrypt_with_shared_point (1 /*=encrypton*/, shared,
+-                                                fp, data, pkey, &result);
+-      gcry_mpi_release (shared);
++        {
++          fingerprint_from_pk (pk, fp, &fpn);
++          if (fpn != 20)
++            rc = gpg_error (GPG_ERR_INV_LENGTH);
++          else
++            rc = pk_ecdh_encrypt_with_shared_point (1 /*=encrypton*/, shared,
++                                                    fp, data, pkey, &result);
++        }
++
+       if (!rc)
+         {
+           resarr[0] = public;
+@@ -343,6 +408,7 @@ pk_encrypt (pubkey_algo_t algo, gcry_mpi_t *resarr, gcry_mpi_t data,
+           gcry_mpi_release (public);
+           gcry_mpi_release (result);
+         }
++	  gcry_mpi_release (shared);
+     }
+   else /* Elgamal or RSA case.  */
+     { /* Fixme: Add better error handling or make gnupg use
+@@ -353,6 +419,7 @@ pk_encrypt (pubkey_algo_t algo, gcry_mpi_t *resarr, gcry_mpi_t data,
+     }
+ 
+   gcry_sexp_release (s_ciph);
++  gcry_mpi_release (ukm);
+   return rc;
+ }
+ 
+diff --git a/g10/pkglue.h b/g10/pkglue.h
+index 77a380191..a65898462 100644
+--- a/g10/pkglue.h
++++ b/g10/pkglue.h
+@@ -46,5 +46,22 @@ int pk_ecdh_encrypt (gcry_mpi_t *resarr, const byte pk_fp[MAX_FINGERPRINT_LEN],
+ int pk_ecdh_decrypt (gcry_mpi_t *result, const byte sk_fp[MAX_FINGERPRINT_LEN],
+                      gcry_mpi_t data, gcry_mpi_t shared, gcry_mpi_t * skey);
+ 
++/* -- gost.c --*/
++gpg_error_t pk_gost_default_params (const char *oidstr, unsigned int qbits,
++                                    gcry_mpi_t *r_params);
++gpg_error_t pk_gost_generate_ukm (gcry_mpi_t *pkey, gcry_mpi_t *r_ukm,
++                                  unsigned int *r_nbits);
++
++gpg_error_t pk_gost_encrypt_with_shared_point (gcry_mpi_t shared,
++                                               gcry_mpi_t ukm,
++                                               gcry_mpi_t data,
++                                               gcry_mpi_t *pkey,
++                                               gcry_mpi_t *r_result);
++
++gpg_error_t pk_gost_decrypt_with_shared_point (gcry_mpi_t shared,
++                                               gcry_mpi_t ukm,
++                                               gcry_mpi_t data,
++                                               gcry_mpi_t *pkey,
++                                               gcry_mpi_t *r_result);
+ 
+ #endif /*GNUPG_G10_PKGLUE_H*/
+diff --git a/g10/pubkey-enc.c b/g10/pubkey-enc.c
+index 4e6f893f3..9e1aa289c 100644
+--- a/g10/pubkey-enc.c
++++ b/g10/pubkey-enc.c
+@@ -36,6 +36,7 @@
+ #include "call-agent.h"
+ #include "../common/host2net.h"
+ #include "../common/compliance.h"
++#include "../common/gost-util.h"
+ 
+ 
+ static gpg_error_t get_it (ctrl_t ctrl, PKT_pubkey_enc *k,
+@@ -167,7 +168,6 @@ get_session_key (ctrl_t ctrl, PKT_pubkey_enc * k, DEK * dek)
+   return rc;
+ }
+ 
+-
+ static gpg_error_t
+ get_it (ctrl_t ctrl,
+         PKT_pubkey_enc *enc, DEK *dek, PKT_public_key *sk, u32 *keyid)
+@@ -215,9 +215,12 @@ get_it (ctrl_t ctrl,
+     {
+       if (!enc->data[0] || !enc->data[1])
+         err = gpg_error (GPG_ERR_BAD_MPI);
+-      else
+-        err = gcry_sexp_build (&s_data, NULL, "(enc-val(ecdh(s%m)(e%m)))",
+-                               enc->data[1], enc->data[0]);
++      else {
++		  err = gcry_sexp_build (&s_data, NULL, "(enc-val(%s(s%m)(e%m)))",
++								 openpgp_oid_is_gost (sk->pkey[0]) ?
++								   "gost" : "ecdh",
++								 enc->data[1], enc->data[0]);
++	  }
+     }
+   else
+     err = gpg_error (GPG_ERR_BUG);
+@@ -264,8 +267,8 @@ get_it (ctrl_t ctrl,
+ 
+   if (sk->pubkey_algo == PUBKEY_ALGO_ECDH)
+     {
+-      gcry_mpi_t shared_mpi;
+-      gcry_mpi_t decoded;
++      gcry_mpi_t shared_mpi = NULL;
++      gcry_mpi_t decoded = NULL;
+ 
+       /* At the beginning the frame are the bytes of shared point MPI.  */
+       err = gcry_mpi_scan (&shared_mpi, GCRYMPI_FMT_USG, frame, nframe, NULL);
+@@ -275,14 +278,59 @@ get_it (ctrl_t ctrl,
+           goto leave;
+         }
+ 
+-      err = pk_ecdh_decrypt (&decoded, fp, enc->data[1]/*encr data as an MPI*/,
+-                             shared_mpi, sk->pkey);
++	  if (openpgp_oid_is_gost (sk->pkey[0]))
++        {
++          int key_len = (mpi_get_nbits (sk->pkey[1])+7)/8;
++          int data_len = (mpi_get_nbits (enc->data[0])+7)/8;
++          int ukm_blen = (data_len - key_len) * 8;
++          if (ukm_blen < 64)
++            {
++              err = GPG_ERR_TOO_SHORT;
++              goto leave;
++            }
++
++          gcry_mpi_t ukm = mpi_copy (enc->data[0]);
++          if (!ukm)
++            {
++              err = gpg_error_from_syserror ();
++              goto leave;
++            }
++
++          mpi_clear_highbit (ukm, ukm_blen);
++          err = pk_gost_decrypt_with_shared_point (shared_mpi, ukm,
++                                                   enc->data[1], sk->pkey,
++                                                   &decoded);
++          mpi_release (ukm);
++        }
++      else
++        {
++		  err = pk_ecdh_decrypt (&decoded, fp,
++                                 enc->data[1]/*encr data as an MPI*/,
++								 shared_mpi, sk->pkey);
++        }
++
+       mpi_release (shared_mpi);
+       if(err)
+         goto leave;
+ 
+       xfree (frame);
+-      err = gcry_mpi_aprint (GCRYMPI_FMT_USG, &frame, &nframe, decoded);
++      frame = NULL;
++
++      if (gcry_mpi_get_flag (decoded, GCRYMPI_FLAG_OPAQUE))
++        {
++          unsigned int decoded_blen;
++          byte *_decoded_buf = gcry_mpi_get_opaque (decoded, &decoded_blen);
++          nframe = (decoded_blen + 7)/8;
++          if (_decoded_buf)
++            frame = xtrymalloc (nframe);
++          if (frame)
++            memcpy (frame, _decoded_buf, nframe);
++          else
++            err = gpg_error_from_syserror ();
++        }
++      else
++        err = gcry_mpi_aprint (GCRYMPI_FMT_USG, &frame, &nframe, decoded);
++
+       mpi_release (decoded);
+       if (err)
+         goto leave;
+diff --git a/g10/seskey.c b/g10/seskey.c
+index 15490179d..a57553dde 100644
+--- a/g10/seskey.c
++++ b/g10/seskey.c
+@@ -276,15 +276,20 @@ encode_md_value (PKT_public_key *pk, gcry_md_hd_t md, int hash_algo)
+                                         8*gcry_md_get_algo_dlen (hash_algo));
+     }
+   else if (pk->pubkey_algo == PUBKEY_ALGO_DSA
+-           || pk->pubkey_algo == PUBKEY_ALGO_ECDSA)
++           || pk->pubkey_algo == PUBKEY_ALGO_ECDSA
++           || (pk->pubkey_algo == PUBKEY_ALGO_ECDH
++               && openpgp_oid_is_gost (pk->pkey[0])))
+     {
+-      /* It's a DSA signature, so find out the size of q.  */
++      int is_ECDSA = (pk->pubkey_algo == PUBKEY_ALGO_ECDSA
++                      || (pk->pubkey_algo == PUBKEY_ALGO_ECDH
++                          && openpgp_oid_is_gost (pk->pkey[0])));
+ 
++      /* It's a DSA signature, so find out the size of q.  */
+       size_t qbits = gcry_mpi_get_nbits (pk->pkey[1]);
+ 
+-      /* pkey[1] is Q for ECDSA, which is an uncompressed point,
++      /* pkey[1] is Q for ECDSA/ECDH, which is an uncompressed point,
+          i.e.  04 <x> <y>  */
+-      if (pk->pubkey_algo == PUBKEY_ALGO_ECDSA)
++      if (is_ECDSA)
+         qbits = ecdsa_qbits_from_Q (qbits);
+ 
+       /* Make sure it is a multiple of 8 bits. */
+@@ -313,7 +318,7 @@ encode_md_value (PKT_public_key *pk, gcry_md_hd_t md, int hash_algo)
+       /* ECDSA 521 is special has it is larger than the largest hash
+          we have (SHA-512).  Thus we change the size for further
+          processing to 512.  */
+-      if (pk->pubkey_algo == PUBKEY_ALGO_ECDSA && qbits > 512)
++      if (is_ECDSA && qbits > 512)
+         qbits = 512;
+ 
+       /* Check if we're too short.  Too long is safe as we'll
+diff --git a/g10/sig-check.c b/g10/sig-check.c
+index 5ec82470b..f029a453d 100644
+--- a/g10/sig-check.c
++++ b/g10/sig-check.c
+@@ -139,7 +139,7 @@ check_signature2 (ctrl_t ctrl,
+     {
+       /* Compliance failure.  */
+       log_info (_("digest algorithm '%s' may not be used in %s mode\n"),
+-                gcry_md_algo_name (sig->digest_algo),
++                gcry_md_algo_name (map_md_openpgp_to_gcry (sig->digest_algo)),
+                 gnupg_compliance_option_string (opt.compliance));
+       rc = gpg_error (GPG_ERR_DIGEST_ALGO);
+     }
+@@ -147,7 +147,7 @@ check_signature2 (ctrl_t ctrl,
+     {
+       /* We don't have this pubkey algo. */
+     }
+-  else if (!gcry_md_is_enabled (digest,sig->digest_algo))
++  else if (!gcry_md_is_enabled (digest, map_md_openpgp_to_gcry (sig->digest_algo)))
+     {
+       /* Sanity check that the md has a context for the hash that the
+        * sig is expecting.  This can happen if a onepass sig header
+@@ -494,7 +494,7 @@ check_signature_end_simple (PKT_public_key *pk, PKT_signature *sig,
+ 
+   /* Make sure the digest algo is enabled (in case of a detached
+    * signature).  */
+-  gcry_md_enable (digest, sig->digest_algo);
++  gcry_md_enable (digest, map_md_openpgp_to_gcry (sig->digest_algo));
+ 
+   /* Complete the digest. */
+   if (sig->version >= 4)
+@@ -543,7 +543,8 @@ check_signature_end_simple (PKT_public_key *pk, PKT_signature *sig,
+   gcry_md_final( digest );
+ 
+   /* Convert the digest to an MPI.  */
+-  result = encode_md_value (pk, digest, sig->digest_algo );
++  result = encode_md_value (pk, digest,
++                            map_md_openpgp_to_gcry (sig->digest_algo));
+   if (!result)
+     return GPG_ERR_GENERAL;
+ 
+@@ -713,7 +714,7 @@ check_revocation_keys (ctrl_t ctrl, PKT_public_key *pk, PKT_signature *sig)
+ 	    {
+               gcry_md_hd_t md;
+ 
+-              if (gcry_md_open (&md, sig->digest_algo, 0))
++              if (gcry_md_open (&md, map_md_openpgp_to_gcry (sig->digest_algo), 0))
+                 BUG ();
+               hash_public_key(md,pk);
+ 	      /* Note: check_signature only checks that the signature
+@@ -755,7 +756,7 @@ check_backsig (PKT_public_key *main_pk,PKT_public_key *sub_pk,
+   if(!opt.no_sig_cache && backsig->flags.checked)
+     return backsig->flags.valid? 0 : gpg_error (GPG_ERR_BAD_SIGNATURE);
+ 
+-  rc = gcry_md_open (&md, backsig->digest_algo,0);
++  rc = gcry_md_open (&md, map_md_openpgp_to_gcry(backsig->digest_algo), 0);
+   if (!rc)
+     {
+       hash_public_key(md,main_pk);
+@@ -937,7 +938,7 @@ check_signature_over_key_or_uid (ctrl_t ctrl, PKT_public_key *signer,
+ 
+   /* We checked above that we supported this algo, so an error here is
+    * a bug.  */
+-  if (gcry_md_open (&md, sig->digest_algo, 0))
++  if (gcry_md_open (&md, map_md_openpgp_to_gcry (sig->digest_algo), 0))
+     BUG ();
+ 
+   /* Hash the relevant data.  */
+diff --git a/g10/sign.c b/g10/sign.c
+index 01a7045aa..9611b8cd8 100644
+--- a/g10/sign.c
++++ b/g10/sign.c
+@@ -285,7 +285,7 @@ do_sign (ctrl_t ctrl, PKT_public_key *pksk, PKT_signature *sig,
+   print_pubkey_algo_note (pksk->pubkey_algo);
+ 
+   if (!mdalgo)
+-    mdalgo = gcry_md_get_algo (md);
++	mdalgo = map_md_gcry_to_openpgp (gcry_md_get_algo (md));
+ 
+   if ((signhints & SIGNHINT_KEYSIG) && !(signhints & SIGNHINT_SELFSIG)
+       && mdalgo == GCRY_MD_SHA1
+@@ -304,8 +304,8 @@ do_sign (ctrl_t ctrl, PKT_public_key *pksk, PKT_signature *sig,
+   if (! gnupg_digest_is_allowed (opt.compliance, 1, mdalgo))
+     {
+       log_error (_("digest algorithm '%s' may not be used in %s mode\n"),
+-		 gcry_md_algo_name (mdalgo),
+-		 gnupg_compliance_option_string (opt.compliance));
++                 gcry_md_algo_name (map_md_openpgp_to_gcry (mdalgo)),
++                 gnupg_compliance_option_string (opt.compliance));
+       err = gpg_error (GPG_ERR_DIGEST_ALGO);
+       goto leave;
+     }
+@@ -331,7 +331,7 @@ do_sign (ctrl_t ctrl, PKT_public_key *pksk, PKT_signature *sig,
+     }
+ 
+   print_digest_algo_note (mdalgo);
+-  dp = gcry_md_read  (md, mdalgo);
++  dp = gcry_md_read (md, map_md_openpgp_to_gcry (mdalgo));
+   sig->digest_algo = mdalgo;
+   sig->digest_start[0] = dp[0];
+   sig->digest_start[1] = dp[1];
+@@ -350,7 +350,8 @@ do_sign (ctrl_t ctrl, PKT_public_key *pksk, PKT_signature *sig,
+       desc = gpg_format_keydesc (ctrl, pksk, FORMAT_KEYDESC_NORMAL, 1);
+       err = agent_pksign (NULL/*ctrl*/, cache_nonce, hexgrip, desc,
+                           pksk->keyid, pksk->main_keyid, pksk->pubkey_algo,
+-                          dp, gcry_md_get_algo_dlen (mdalgo), mdalgo,
++                          dp, gcry_md_get_algo_dlen (map_md_openpgp_to_gcry (mdalgo)),
++                          map_md_openpgp_to_gcry (mdalgo),
+                           &s_sigval);
+       xfree (desc);
+ 
+@@ -366,8 +367,8 @@ do_sign (ctrl_t ctrl, PKT_public_key *pksk, PKT_signature *sig,
+         }
+       else
+         {
+-          sig->data[0] = get_mpi_from_sexp (s_sigval, "r", GCRYMPI_FMT_USG);
+-          sig->data[1] = get_mpi_from_sexp (s_sigval, "s", GCRYMPI_FMT_USG);
++          sig->data[0] = get_mpi_from_sexp (s_sigval, "r", GCRYMPI_FMT_OPAQUE);
++          sig->data[1] = get_mpi_from_sexp (s_sigval, "s", GCRYMPI_FMT_OPAQUE);
+         }
+ 
+       gcry_sexp_release (s_sigval);
+@@ -450,8 +451,11 @@ openpgp_card_v1_p (PKT_public_key *pk)
+ 
+ 
+ static int
+-match_dsa_hash (unsigned int qbytes)
++match_dsa_hash (PKT_public_key *pk, unsigned int qbytes)
+ {
++  if (openpgp_oid_is_gost (pk->pkey[0]))
++    return map_key_oid_to_md_openpgp (pk->pkey[0]);
++
+   if (qbytes <= 20)
+     return DIGEST_ALGO_SHA1;
+ 
+@@ -543,7 +547,7 @@ hash_for (PKT_public_key *pk)
+ 	    }
+ 	}
+ 
+-      return match_dsa_hash(qbytes);
++      return match_dsa_hash (pk, qbytes);
+     }
+   else if (openpgp_card_v1_p (pk))
+     {
+@@ -570,6 +574,11 @@ hash_for (PKT_public_key *pk)
+ 	 is in the pref list */
+       return opt.personal_digest_prefs[0].value;
+     }
++  else if (pk->pubkey_algo == PUBKEY_ALGO_ECDH &&
++           openpgp_oid_is_gost (pk->pkey[0]))
++    {
++      return map_key_oid_to_md_openpgp (pk->pkey[0]);
++    }
+   else
+     return DEFAULT_DIGEST_ALGO;
+ }
+@@ -941,10 +950,10 @@ sign_file (ctrl_t ctrl, strlist_t filenames, int detached, strlist_t locusr,
+ 	       select_algo_from_prefs(pk_list,PREFTYPE_HASH,
+ 				      opt.def_digest_algo,
+ 				      NULL)!=opt.def_digest_algo)
+-	  log_info(_("WARNING: forcing digest algorithm %s (%d)"
+-		     " violates recipient preferences\n"),
+-		   gcry_md_algo_name (opt.def_digest_algo),
+-		   opt.def_digest_algo );
++            log_info(_("WARNING: forcing digest algorithm %s (%d)"
++                       " violates recipient preferences\n"),
++                     gcry_md_algo_name ( map_md_openpgp_to_gcry(opt.def_digest_algo) ),
++                     opt.def_digest_algo );
+ 	  }
+ 	else
+ 	  {
+@@ -1009,7 +1018,7 @@ sign_file (ctrl_t ctrl, strlist_t filenames, int detached, strlist_t locusr,
+       }
+ 
+     for (sk_rover = sk_list; sk_rover; sk_rover = sk_rover->next)
+-      gcry_md_enable (mfx.md, hash_for (sk_rover->pk));
++        gcry_md_enable (mfx.md, map_md_openpgp_to_gcry (hash_for (sk_rover->pk)));
+ 
+     if( !multifile )
+ 	iobuf_push_filter( inp, md_filter, &mfx );
+@@ -1229,14 +1238,14 @@ clearsign_file (ctrl_t ctrl,
+ 	    int i = hash_for (sk_rover->pk);
+ 
+ 	    if( !hashs_seen[ i & 0xff ] ) {
+-		s = gcry_md_algo_name ( i );
+-		if( s ) {
+-		    hashs_seen[ i & 0xff ] = 1;
+-		    if( any )
+-			iobuf_put(out, ',' );
+-		    iobuf_writestr(out, s );
+-		    any = 1;
+-		}
++            s = gcry_md_algo_name ( map_md_openpgp_to_gcry(i) );
++            if( s ) {
++                hashs_seen[ i & 0xff ] = 1;
++                if( any )
++                    iobuf_put(out, ',' );
++                iobuf_writestr(out, s );
++                any = 1;
++            }
+ 	    }
+ 	}
+ 	log_assert(any);
+@@ -1252,7 +1261,7 @@ clearsign_file (ctrl_t ctrl,
+     if ( gcry_md_open (&textmd, 0, 0) )
+       BUG ();
+     for (sk_rover = sk_list; sk_rover; sk_rover = sk_rover->next)
+-      gcry_md_enable (textmd, hash_for(sk_rover->pk));
++      gcry_md_enable (textmd, map_md_openpgp_to_gcry (hash_for(sk_rover->pk)));
+ 
+     if ( DBG_HASHING )
+       gcry_md_debug ( textmd, "clearsign" );
+@@ -1375,7 +1384,7 @@ sign_symencrypt_file (ctrl_t ctrl, const char *fname, strlist_t locusr)
+       gcry_md_debug (mfx.md, "symc-sign");
+ 
+     for (sk_rover = sk_list; sk_rover; sk_rover = sk_rover->next)
+-      gcry_md_enable (mfx.md, hash_for (sk_rover->pk));
++      gcry_md_enable (mfx.md, map_md_openpgp_to_gcry (hash_for (sk_rover->pk)));
+ 
+     iobuf_push_filter (inp, md_filter, &mfx);
+ 
+@@ -1514,18 +1523,21 @@ make_keysig_packet (ctrl_t ctrl,
+ 	if(opt.cert_digest_algo)
+ 	  digest_algo=opt.cert_digest_algo;
+ 	else if(pksk->pubkey_algo == PUBKEY_ALGO_DSA)
+-	  digest_algo = match_dsa_hash (gcry_mpi_get_nbits (pksk->pkey[1])/8);
+-        else if (pksk->pubkey_algo == PUBKEY_ALGO_ECDSA
+-                 || pksk->pubkey_algo == PUBKEY_ALGO_EDDSA)
+-          {
+-            if (openpgp_oid_is_ed25519 (pksk->pkey[0]))
++	  digest_algo = match_dsa_hash (pksk,
++                                    gcry_mpi_get_nbits (pksk->pkey[1])/8);
++    else if (pksk->pubkey_algo == PUBKEY_ALGO_ECDSA
++             || pksk->pubkey_algo == PUBKEY_ALGO_EDDSA
++             || (pksk->pubkey_algo == PUBKEY_ALGO_ECDH
++                 && openpgp_oid_is_gost (pksk->pkey[0])))
++      {
++          if (openpgp_oid_is_ed25519 (pksk->pkey[0]))
+               digest_algo = DIGEST_ALGO_SHA256;
+-            else
+-              digest_algo = match_dsa_hash
+-                (ecdsa_qbits_from_Q (gcry_mpi_get_nbits (pksk->pkey[1]))/8);
+-          }
++          else
++              digest_algo = match_dsa_hash (pksk,
++                                            ecdsa_qbits_from_Q (gcry_mpi_get_nbits (pksk->pkey[1]))/8);
++      }
+ 	else
+-	  digest_algo = DEFAULT_DIGEST_ALGO;
++		digest_algo = DEFAULT_DIGEST_ALGO;
+       }
+ 
+     signhints = SIGNHINT_KEYSIG;
+@@ -1534,7 +1546,7 @@ make_keysig_packet (ctrl_t ctrl,
+     if (pk_keyid[0] == pksk_keyid[0] && pk_keyid[1] == pksk_keyid[1])
+       signhints |= SIGNHINT_SELFSIG;
+ 
+-    if ( gcry_md_open (&md, digest_algo, 0 ) )
++    if ( gcry_md_open (&md, map_md_openpgp_to_gcry(digest_algo), 0 ) )
+       BUG ();
+ 
+     /* Hash the public key certificate. */
+@@ -1641,7 +1653,7 @@ update_keysig_packet (ctrl_t ctrl,
+     if (pk_keyid[0] == pksk_keyid[0] && pk_keyid[1] == pksk_keyid[1])
+       signhints |= SIGNHINT_SELFSIG;
+ 
+-    if ( gcry_md_open (&md, digest_algo, 0 ) )
++    if ( gcry_md_open (&md, map_md_openpgp_to_gcry (digest_algo), 0 ) )
+       BUG ();
+ 
+     /* Hash the public key certificate and the user id. */

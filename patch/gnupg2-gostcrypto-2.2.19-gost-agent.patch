@@ -1,0 +1,225 @@
+ agent/divert-scd.c | 105 ++++++++++++++++++++++++++++++++---------------------
+ agent/pksign.c     |  38 +++++++++++++++----
+ 2 files changed, 95 insertions(+), 48 deletions(-)
+
+diff --git a/agent/divert-scd.c b/agent/divert-scd.c
+index 191ed7f2e..79dbd27bf 100644
+--- a/agent/divert-scd.c
++++ b/agent/divert-scd.c
+@@ -499,10 +499,13 @@ divert_pkdecrypt (ctrl_t ctrl, const char *desc_text,
+   const unsigned char *s;
+   size_t n;
+   int depth;
+-  const unsigned char *ciphertext;
+-  size_t ciphertextlen;
++  const unsigned char *ciphertext = NULL;
++  size_t ciphertextlen = 0;
+   char *plaintext;
+   size_t plaintextlen;
++  const unsigned char *postciphertext = NULL;
++  size_t postciphertextlen = 0;
++  unsigned char *cipherbuf = NULL;
+ 
+   (void)desc_text;
+ 
+@@ -537,54 +540,71 @@ divert_pkdecrypt (ctrl_t ctrl, const char *desc_text,
+         return gpg_error (GPG_ERR_INV_SEXP);
+     }
+ 
+-  if (smatch (&s, n, "rsa"))
+-    {
+-      if (*s != '(')
+-        return gpg_error (GPG_ERR_UNKNOWN_SEXP);
+-      s++;
+-      n = snext (&s);
+-      if (!n)
+-        return gpg_error (GPG_ERR_INV_SEXP);
+-      if (!smatch (&s, n, "a"))
+-        return gpg_error (GPG_ERR_UNKNOWN_SEXP);
+-      n = snext (&s);
+-    }
+-  else if (smatch (&s, n, "ecdh"))
+-    {
+-      if (*s != '(')
+-        return gpg_error (GPG_ERR_UNKNOWN_SEXP);
+-      s++;
+-      n = snext (&s);
++  if (!smatch (&s, n, "rsa")
++      && !smatch (&s, n, "gost")
++      && !smatch (&s, n, "ecdh"))
++    return gpg_error (GPG_ERR_UNSUPPORTED_ALGORITHM);
++
++  while (n && *s != ')')
++	{
++	  if (*s != '(')
++		return gpg_error (GPG_ERR_INV_SEXP);
++	  s++;
++	  n = snext (&s);
++
++	  if (!n)
++		return gpg_error (GPG_ERR_INV_SEXP);
++
++	  if (smatch (&s, n, "s"))
++		{
++		  n = snext (&s); if (!n) break;
++		}
++	  else if (smatch (&s, n, "u"))
++		{
++		  n = snext (&s); if (!n) break;
++		  postciphertext = s;
++		  postciphertextlen = n;
++		}
++	  else if (smatch (&s, n, "e") ||
++			   smatch (&s, n, "a") ||
++			   smatch (&s, n, "q"))
++		{
++		  n = snext (&s); if (!n) break;
++		  ciphertext = s;
++		  ciphertextlen = n;
++		}
++	  else
++		{
++		  /* Skip the value */
++		  s += n;
++		  n = snext (&s); if (!n) break;
++		}
+       if (!n)
+         return gpg_error (GPG_ERR_INV_SEXP);
+-      if (smatch (&s, n, "s"))
+-        {
+-          n = snext (&s);
+-          s += n;
+-          if (*s++ != ')')
+-            return gpg_error (GPG_ERR_INV_SEXP);
+-          if (*s++ != '(')
+-            return gpg_error (GPG_ERR_UNKNOWN_SEXP);
+-          n = snext (&s);
+-          if (!n)
+-            return gpg_error (GPG_ERR_INV_SEXP);
+-        }
+-      if (!smatch (&s, n, "e"))
+-        return gpg_error (GPG_ERR_UNKNOWN_SEXP);
+-      n = snext (&s);
+-    }
+-  else
+-    return gpg_error (GPG_ERR_UNSUPPORTED_ALGORITHM);
++	  s += n;
++	  if (*s++ != ')')
++		return gpg_error (GPG_ERR_INV_SEXP);
++	}
+ 
+-  if (!n)
++  if (!ciphertext)
+     return gpg_error (GPG_ERR_UNKNOWN_SEXP);
+-  ciphertext = s;
+-  ciphertextlen = n;
+ 
+   rc = ask_for_card (ctrl, shadow_info, &kid);
+   if (rc)
+     return rc;
+ 
++  if (postciphertext) {
++	  cipherbuf = xmalloc (ciphertextlen + postciphertextlen);
++	  if (!cipherbuf) {
++		  rc = gpg_error_from_syserror ();
++		  goto exit;
++	  }
++      memcpy (cipherbuf, ciphertext, ciphertextlen);
++	  memcpy (cipherbuf + ciphertextlen, postciphertext, postciphertextlen);
++	  ciphertext = cipherbuf;
++	  ciphertextlen += postciphertextlen;
++  }
++
+   rc = agent_card_pkdecrypt (ctrl, kid, getpin_cb, ctrl, NULL,
+                              ciphertext, ciphertextlen,
+                              &plaintext, &plaintextlen, r_padding);
+@@ -593,7 +613,10 @@ divert_pkdecrypt (ctrl_t ctrl, const char *desc_text,
+       *r_buf = plaintext;
+       *r_len = plaintextlen;
+     }
++
++ exit:
+   xfree (kid);
++  xfree (cipherbuf);
+   return rc;
+ }
+ 
+diff --git a/agent/pksign.c b/agent/pksign.c
+index f54af0817..c5fab8c70 100644
+--- a/agent/pksign.c
++++ b/agent/pksign.c
+@@ -211,10 +211,15 @@ do_encode_dsa (const byte *md, size_t mdlen, int pkalgo, gcry_sexp_t pkey,
+     mdlen = qbits/8;
+ 
+   /* Create the S-expression.  */
+-  err = gcry_sexp_build (&hash, NULL,
+-                         "(data (flags rfc6979) (hash %s %b))",
+-                         rfc6979_hash_algo_string (mdlen),
+-                         (int)mdlen, md);
++  if (pkey_is_gost (pkey))
++      err = gcry_sexp_build (&hash, NULL,
++                             "(data (flags gost) (value %b))",
++                             (int)mdlen, md);
++  else
++      err = gcry_sexp_build (&hash, NULL,
++                             "(data (flags rfc6979) (hash %s %b))",
++                             rfc6979_hash_algo_string (mdlen),
++                             (int)mdlen, md);
+   if (!err)
+     *r_hash = hash;
+   return err;
+@@ -327,6 +332,7 @@ agent_pksign_do (ctrl_t ctrl, const char *cache_nonce,
+       int key_type;
+       int is_RSA = 0;
+       int is_ECDSA = 0;
++      int is_GOST = 0;
+       int is_EdDSA = 0;
+ 
+       err = agent_public_key_from_file (ctrl, ctrl->keygrip, &s_pkey);
+@@ -394,9 +400,20 @@ agent_pksign_do (ctrl_t ctrl, const char *cache_nonce,
+           unsigned char *r_buf, *s_buf;
+           int r_buflen, s_buflen;
+ 
++		  /* FIXME: Isn't it better to use s_pkey above? */
++          unsigned char *tmp_buf;
++          switch ( ctrl->digest.algo ) {
++          case GCRY_MD_GOSTR3411_CP:
++          case GCRY_MD_GOSTR3411_94:
++          case GCRY_MD_STRIBOG256:
++          case GCRY_MD_STRIBOG512:
++              is_GOST = 1;
++              break;
++		  }
++
+           r_buflen = s_buflen = len/2;
+ 
+-          if (*buf & 0x80)
++          if (!is_GOST && (*buf & 0x80))
+             {
+               r_buflen++;
+               r_buf_allocated = xtrymalloc (r_buflen);
+@@ -413,7 +430,7 @@ agent_pksign_do (ctrl_t ctrl, const char *cache_nonce,
+           else
+             r_buf = buf;
+ 
+-          if (*(buf + len/2) & 0x80)
++          if (!is_GOST && (*(buf + len/2) & 0x80))
+             {
+               s_buflen++;
+               s_buf_allocated = xtrymalloc (s_buflen);
+@@ -431,7 +448,14 @@ agent_pksign_do (ctrl_t ctrl, const char *cache_nonce,
+           else
+             s_buf = buf + len/2;
+ 
+-          err = gcry_sexp_build (&s_sig, NULL, "(sig-val(ecdsa(r%b)(s%b)))",
++          if (is_GOST) {
++              tmp_buf = s_buf;
++              s_buf = r_buf;
++              r_buf = tmp_buf;
++          }
++
++          err = gcry_sexp_build (&s_sig, NULL, "(sig-val(%s(r%b)(s%b)))",
++                                 is_GOST ? "gost" : "ecdsa",
+                                  r_buflen, r_buf,
+                                  s_buflen, s_buf);
+           xfree (r_buf_allocated);

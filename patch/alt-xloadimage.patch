@@ -1,0 +1,13 @@
+--- gnupg-1.9.6/g10/photoid.c~	2004-04-07 18:45:58 +0400
++++ gnupg-1.9.6/g10/photoid.c	2004-04-07 18:46:06 +0400
+@@ -282,8 +282,8 @@ get_default_photo_command(void)
+ #elif defined(__riscos__)
+   return "Filer_Run %I";
+ #else
+-  if (!path_access ("xloadimage", X_OK))
+-    return "xloadimage -fork -quiet -title 'KeyID 0x%k' stdin";
++  if (!path_access ("xli", X_OK))
++    return "xli -fork -quiet -title 'KeyID 0x%k' stdin";
+   else if (!path_access ("display",X_OK))
+     return "display -title 'KeyID 0x%k' %i";
+   else if (getuid () && !path_access ("xdg-open", X_OK))

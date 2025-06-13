@@ -1,0 +1,1134 @@
+ common/Makefile.am     |   3 +-
+ common/gost-util.c     | 569 +++++++++++++++++++++++++++++++++++++++++++++++++
+ common/gost-util.h     |  60 ++++++
+ common/logging.c       |  25 +++
+ common/logging.h       |   3 +
+ common/miscellaneous.c |  46 ++++
+ common/openpgp-oid.c   |  56 +++++
+ common/openpgpdefs.h   |  27 ++-
+ common/sexputil.c      | 104 ++++++++-
+ common/util.h          |  15 ++
+ g10/pkglue.c           |  18 --
+ 11 files changed, 903 insertions(+), 23 deletions(-)
+
+diff --git a/common/Makefile.am b/common/Makefile.am
+index 3dbad0ccc..50cc01cac 100644
+--- a/common/Makefile.am
++++ b/common/Makefile.am
+@@ -94,7 +94,8 @@ common_sources = \
+ 	name-value.c name-value.h \
+ 	recsel.c recsel.h \
+ 	ksba-io-support.c ksba-io-support.h \
+-	compliance.c compliance.h
++	compliance.c compliance.h \
++	gost-util.h gost-util.c
+ 
+ 
+ if HAVE_W32_SYSTEM
+diff --git a/common/gost-util.c b/common/gost-util.c
+new file mode 100644
+index 000000000..13d7f83af
+--- /dev/null
++++ b/common/gost-util.c
+@@ -0,0 +1,569 @@
++/* gost-util.c - Some common code for GOST crypto.
++ * Copyright (C) 2019 Paul Wolneykien <manowar@altlinux.org>
++ *
++ * This file is part of GnuPG.
++ *
++ * GnuPG is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * GnuPG is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <https://www.gnu.org/licenses/>.
++ */
++
++#include <config.h>
++#include <stdlib.h>
++#include "gost-util.h"
++//#include "logging.h"
++#include "util.h"
++
++gpg_error_t
++gost_generate_ukm (unsigned int ukm_blen, gcry_mpi_t *r_ukm)
++{
++  if (!*r_ukm)
++    {
++      *r_ukm = gcry_mpi_new (ukm_blen);
++      if (!*r_ukm)
++        return gpg_error_from_syserror ();
++    }
++
++  gcry_mpi_randomize (*r_ukm, ukm_blen, GCRY_STRONG_RANDOM);
++
++  return GPG_ERR_NO_ERROR;
++}
++
++static gpg_error_t
++set_cipher_sbox (gcry_cipher_hd_t hd, const char *sbox)
++{
++  if (sbox)
++    {
++      char *_sbox = xstrdup (sbox);
++      if (!_sbox)
++        return gpg_error_from_syserror ();
++      gpg_error_t ret = gcry_cipher_ctl (hd, GCRYCTL_SET_SBOX, _sbox,
++                                         strlen (_sbox));
++      xfree (_sbox);
++      return ret;
++    }
++
++  return GPG_ERR_NO_ERROR;
++}
++
++static gpg_error_t
++set_mac_sbox (gcry_mac_hd_t hd, const char *sbox)
++{
++  if (sbox)
++    {
++      char *_sbox = xstrdup (sbox);
++      if (!_sbox)
++        return gpg_error_from_syserror ();
++      gpg_error_t ret = gcry_mac_ctl (hd, GCRYCTL_SET_SBOX, _sbox,
++                                      strlen (_sbox));
++      xfree (_sbox);
++      return ret;
++    }
++
++  return GPG_ERR_NO_ERROR;
++}
++
++/**
++ * Diversifies the key using the given UKM.
++ * Implements RFC 4357 p 6.5 key diversification algorithm.
++ *
++ * The UKM value can be opaque.
++ *
++ * Thanks to Dmitry Belyavskiy.
++ *
++ * @param result MPI to store the diversified key (32 bytes)
++ * @param key 32-byte key to be diversified
++ * @param ukm 8-byte user key material
++ *
++ */
++gpg_error_t
++gost_cpdiversify_key (gcry_mpi_t *result,
++                      enum gcry_cipher_algos cipher_algo,
++                      const char *cipher_sbox,
++                      const unsigned char *key, size_t key_len,
++                      gcry_mpi_t ukm)
++{
++  byte* result_buf = NULL;
++  byte* ukm_buf = NULL;
++  size_t ukm_len;
++  gcry_cipher_hd_t hd = NULL;
++  gpg_error_t ret = GPG_ERR_NO_ERROR;
++
++  if (gcry_mpi_get_flag (ukm, GCRYMPI_FLAG_OPAQUE))
++    {
++      unsigned int ukm_blen;
++      byte *_ukm_buf = gcry_mpi_get_opaque (ukm, &ukm_blen);
++      ukm_len = (ukm_blen + 7)/8;
++      if (_ukm_buf)
++        ukm_buf = xtrymalloc (ukm_len);
++      if (ukm_buf)
++        memcpy (ukm_buf, _ukm_buf, ukm_len);
++    }
++  else
++    ret = gcry_mpi_aprint (GCRYMPI_FMT_USG, &ukm_buf, &ukm_len, ukm);
++  if (ret != GPG_ERR_NO_ERROR)
++    goto exit;
++
++  flip_buffer (ukm_buf, ukm_len);
++
++  /*if (DBG_CRYPTO) {
++    log_printhex ("in UKM:", ukm_buf, ukm_len);
++    log_printhex ("in KEY:", key, key_len);
++  }*/
++
++  if (ukm_len < 8) {
++    ret = GPG_ERR_TOO_SHORT;
++    goto exit;
++  }
++
++  result_buf = xtrymalloc_secure (key_len);
++  if (!result_buf) {
++    ret = gpg_error_from_syserror ();
++    goto exit;
++  }
++
++  ret = gcry_cipher_open (&hd, cipher_algo, GCRY_CIPHER_MODE_CFB, 0);
++  if (ret != GPG_ERR_NO_ERROR)
++    goto exit;
++
++  u32 k, s1, s2;
++  int i, j, mask;
++  unsigned char S[8];
++
++  memcpy (result_buf, key, key_len);
++
++  for (i = 0; i < 8; i++) {
++    /* Make array of integers from the key */
++    /* Compute IV S */
++    s1 = 0, s2 = 0;
++    for (j = 0, mask = 1; j < 8; j++, mask <<= 1) {
++      k = ((u32) result_buf[4 * j]) | (result_buf[4 * j + 1] << 8) |
++        (result_buf[4 * j + 2] << 16) | (result_buf[4 * j + 3] << 24);
++      if (mask & ukm_buf[i]) {
++        s1 += k;
++      } else {
++        s2 += k;
++      }
++    }
++    S[0] = (unsigned char)(s1 & 0xff);
++    S[1] = (unsigned char)((s1 >> 8) & 0xff);
++    S[2] = (unsigned char)((s1 >> 16) & 0xff);
++    S[3] = (unsigned char)((s1 >> 24) & 0xff);
++    S[4] = (unsigned char)(s2 & 0xff);
++    S[5] = (unsigned char)((s2 >> 8) & 0xff);
++    S[6] = (unsigned char)((s2 >> 16) & 0xff);
++    S[7] = (unsigned char)((s2 >> 24) & 0xff);
++
++    ret = gcry_cipher_reset (hd);
++    if (ret) goto exit;
++    ret = gcry_cipher_setkey (hd, result_buf, key_len);
++    if (ret) goto exit;
++    ret = gcry_cipher_setiv (hd, S, sizeof S);
++    if (ret) goto exit;
++    ret = set_cipher_sbox (hd, cipher_sbox);
++    if (ret) goto exit;
++
++    ret = gcry_cipher_encrypt (hd, result_buf, key_len,
++                               NULL, 0);
++  }
++
++  /*if (DBG_CRYPTO) {
++    log_printhex ("diversified KEY:", result_buf, key_len);
++  }*/
++
++  *result = gcry_mpi_set_opaque_copy (*result, result_buf, 8 * key_len);
++
++ exit:
++  gcry_cipher_close (hd);
++  xfree (ukm_buf);
++  xfree (result_buf);
++
++  return ret;
++}
++
++/**
++ * Wraps the key using RFC 4357 6.3 or RFC 7836 4.6. However, the UKM
++ * value isn't included into the result value.
++ *
++ * The UKM value can be opaque.
++ *
++ * Thanks to Dmitry Belyavskiy.
++ *
++ * @param result reference to store the resulting MPI with the wrapped key
++ * @param cipher_algo Cipher algorithm
++ * @param cipher_sbox Cipher algorithm parameters (S-box)
++ * @param mac_algo MAC algorithm
++ * @param mac_sbox MAC algorithm parameters (S-box for CMAC)
++ * @param key 32-byte (256-bit) session key to be wrapped
++ * @param ukm 8--16 byte (64--128 bit) user key material
++ * @param kek 32-byte (256-bit) shared key (with KDF already applied)
++ */
++gpg_error_t
++gost_keywrap (gcry_mpi_t *result,
++              enum gcry_cipher_algos cipher_algo,
++              const char *cipher_sbox,
++              enum gcry_mac_algos mac_algo,
++              const char *mac_sbox,
++              gcry_mpi_t key, gcry_mpi_t ukm, gcry_mpi_t kek)
++{
++	gpg_error_t err = 0;
++	gcry_cipher_hd_t cipher_hd = NULL;
++	gcry_mac_hd_t mac_hd = NULL;
++	byte *ekey_buf = NULL;
++	byte *result_buf = NULL;
++	byte *ukm_buf = NULL;
++
++	err = gcry_cipher_open (&cipher_hd, cipher_algo, GCRY_CIPHER_MODE_ECB, 0);
++	if (err) goto exit;
++
++	size_t keylen = (gcry_mpi_get_nbits (key) + 7)/8;
++	ekey_buf = xtrymalloc_secure (keylen);
++	size_t mac_len = gcry_mac_get_algo_maclen (mac_algo);
++	size_t result_len = keylen + mac_len;
++	result_buf = xmalloc (result_len);
++    if (!ekey_buf || !result_buf) {
++      err = gpg_error_from_syserror ();
++      goto exit;
++	}
++
++    size_t ukm_len = (gcry_mpi_get_nbits (ukm) + 7)/8;
++    ukm_buf = xmalloc (ukm_len);
++    if (!ukm_buf)
++      {
++        err = gpg_error_from_syserror ();
++        goto exit;
++      }
++
++	unsigned int kek_len = gcry_cipher_get_algo_keylen (cipher_algo);
++	unsigned int kek_nbits;
++	unsigned char *kek_buf = gcry_mpi_get_opaque (kek, &kek_nbits);
++	if (!kek_buf)
++      {
++		err = gpg_error_from_syserror ();
++		goto exit;
++      }
++	if ((kek_nbits + 7)/8 != kek_len)
++      {
++        err = GPG_ERR_INV_KEYLEN;
++		goto exit;
++      }
++
++	err = gcry_cipher_setkey (cipher_hd, kek_buf, kek_len);
++    if (err) goto exit;
++
++    err = set_cipher_sbox (cipher_hd, cipher_sbox);
++    if (err) goto exit;
++
++	err = gcry_mpi_print (GCRYMPI_FMT_USG, ekey_buf, keylen,
++						   NULL, key);
++	if (err) goto exit;
++	err = gcry_cipher_encrypt (cipher_hd, result_buf, keylen,
++                               ekey_buf, keylen);
++	if (err) goto exit;
++
++    if (gcry_mpi_get_flag (ukm, GCRYMPI_FLAG_OPAQUE))
++      {
++        unsigned int ukm_blen;
++        byte *_ukm_buf = gcry_mpi_get_opaque (ukm, &ukm_blen);
++        if (_ukm_buf)
++          memcpy (ukm_buf, _ukm_buf, ukm_len);
++      }
++    else
++      {
++        size_t ukm_wrt;
++        err = gcry_mpi_print (GCRYMPI_FMT_USG, ukm_buf, ukm_len,
++                              &ukm_wrt, ukm);
++        if (err) goto exit;
++        if (ukm_wrt < ukm_len)
++          {
++            memmove (ukm_buf + (ukm_len - ukm_wrt), ukm_buf, ukm_wrt);
++            memset (ukm_buf, 0, ukm_len - ukm_wrt);
++          }
++      }
++    if (err) goto exit;
++	flip_buffer (ukm_buf, ukm_len);
++
++    err = gcry_mac_open (&mac_hd, mac_algo, 0, NULL);
++	if (err) goto exit;
++
++    err = set_mac_sbox (mac_hd, mac_sbox);
++    if (err) goto exit;
++
++	err = gcry_mac_setkey (mac_hd, kek_buf, kek_len);
++	if (err) goto exit;
++	err = gcry_mac_setiv (mac_hd, ukm_buf, ukm_len);
++	if (err) goto exit;
++	err = gcry_mac_write (mac_hd, ekey_buf, keylen);
++	if (err) goto exit;
++
++	err = gcry_mac_read (mac_hd, result_buf + keylen, &mac_len);
++	if (err) goto exit;
++
++	*result = gcry_mpi_set_opaque_copy (*result, result_buf, 8 * result_len);
++
++	/*if (DBG_CRYPTO) {
++		log_printmpi ("wrapped key value: ", result);
++    }*/
++
++ exit:
++	gcry_cipher_close (cipher_hd);
++    gcry_mac_close (mac_hd);
++	xfree (ukm_buf);
++	xfree (ekey_buf);
++	xfree (result_buf);
++
++	return err;
++}
++
++gpg_error_t
++gost_vko (gcry_mpi_t shared, enum gcry_md_algos digest_algo,
++          const char *digest_params, unsigned char **keyout,
++          size_t *keyout_len)
++{
++  byte *secret = NULL;
++  gcry_md_hd_t md = NULL;
++  unsigned char *_keyout = NULL;
++  gpg_error_t ret = GPG_ERR_NO_ERROR;
++
++  switch (digest_algo)
++    {
++    case GCRY_MD_GOSTR3411_94:
++      if (!digest_params || strcmp (digest_params, "1.2.643.2.2.30.1"))
++        {
++          /* No other possible values exist and no explicit parameters
++             are supported in Libgcrypt -- the actual GCRY value for
++             the digest algo is GCRY_MD_GOSTR3411_CP --- GOST R 34.11-94
++             with CryptoPro-A S-box.*/
++          ret = GPG_ERR_DIGEST_ALGO;
++        }
++      else
++        digest_algo = GCRY_MD_GOSTR3411_CP;
++      break;
++    case GCRY_MD_GOSTR3411_CP:
++      if (digest_params && strcmp (digest_params, "1.2.643.2.2.30.1"))
++        ret = GPG_ERR_DIGEST_ALGO;
++      break;
++    case GCRY_MD_STRIBOG256:
++    case GCRY_MD_STRIBOG512:
++      if (digest_params)
++        {
++          /* No parameter values exist for GOST R 34.11-2012. */
++          ret = GPG_ERR_DIGEST_ALGO;
++        }
++      break;
++    default:
++      ret = GPG_ERR_DIGEST_ALGO;
++    }
++
++  if (ret != GPG_ERR_NO_ERROR)
++    {
++      log_error ("Wrong digest parameters for VKO 7836\n");
++      return ret;
++    }
++
++  size_t secret_len = (mpi_get_nbits (shared) + 7)/8;
++  secret = xtrymalloc_secure (secret_len);
++  if (!secret)
++    {
++      ret = gpg_error_from_syserror ();
++      goto exit;
++    }
++  ret = gcry_mpi_print (GCRYMPI_FMT_USG, secret, secret_len, NULL,
++                        shared);
++  if (ret != GPG_ERR_NO_ERROR)
++    return ret;
++
++  /* Remove the prefix. */
++  if (secret_len % 2)
++    {
++      memmove (secret, secret + 1, secret_len - 1);
++      secret_len -= 1;
++    }
++
++  flip_buffer (secret, secret_len/2);
++  flip_buffer (secret + secret_len/2, secret_len/2);
++
++  ret = gcry_md_open (&md, digest_algo, GCRY_MD_FLAG_SECURE);
++  if (ret != GPG_ERR_NO_ERROR)
++    goto exit;
++
++  gcry_md_write (md, secret, secret_len);
++
++  size_t _keyout_len = gcry_md_get_algo_dlen (digest_algo);
++  if (*keyout && (!keyout_len || *keyout_len < _keyout_len))
++    {
++      ret = GPG_ERR_TOO_SHORT;
++      goto exit;
++    }
++
++  _keyout = gcry_md_read (md, digest_algo);
++  if (!_keyout)
++    {
++      ret = gpg_error_from_syserror ();
++      goto exit;
++    }
++
++  if (!*keyout)
++    {
++      *keyout = xtrymalloc_secure (_keyout_len);
++      if (!*keyout) {
++        ret = gpg_error_from_syserror ();
++        goto exit;
++      }
++    }
++
++  memcpy (*keyout, _keyout, _keyout_len);
++  *keyout_len = _keyout_len;
++
++ exit:
++  xfree (secret);
++  gcry_md_close (md);
++
++  if (ret != GPG_ERR_NO_ERROR)
++    {
++      if (!*keyout)
++        *keyout_len = 0;
++    }
++
++  return ret;
++}
++
++/**
++ * Unwraps the key that was wrapped using RFC 4357 6.3 or
++ * RFC 7836 4.6. However the UKM value is passed separately
++ * from the wrapped key value.
++ *
++ * The UKM value can be opaque.
++ *
++ * Thanks to Dmitry Belyavskiy.
++ *
++ * @param result MPI to store the unwrapped key (32-byte)
++ * @param cipher_algo Cipher algorithm
++ * @param cipher_sbox Cipher algorithm parameters (S-box)
++ * @param mac_algo MAC algorithm
++ * @param mac_sbox MAC algorithm parameters (S-box for CMAC)
++ * @param wrapped wrapped key
++ * @param wrapped_len wrapped key length
++ * @param ukm 8--16 byte (64--128 bit) user key material
++ * @param kek 32-byte (256-bit) shared key (with KDF already applied)
++ */
++gpg_error_t
++gost_keyunwrap (gcry_mpi_t *result,
++                enum gcry_cipher_algos cipher_algo,
++                const char *cipher_sbox,
++                enum gcry_mac_algos mac_algo,
++                const char *mac_sbox,
++                const unsigned char *wrapped, size_t wrapped_len,
++                gcry_mpi_t ukm, gcry_mpi_t kek)
++{
++  gpg_error_t err = 0;
++  gcry_cipher_hd_t cipher_hd = NULL;
++  gcry_mac_hd_t mac_hd = NULL;
++  unsigned char *ukm_buf = NULL;
++  unsigned char *result_buf = NULL;
++
++  /*if (DBG_CRYPTO)
++    log_printhex ("encrypted value: ", wrapped, wrapped_len);*/
++
++  err = gcry_cipher_open (&cipher_hd, cipher_algo, GCRY_CIPHER_MODE_ECB, 0);
++  if (err) goto exit;
++
++  size_t mac_len = gcry_mac_get_algo_maclen (mac_algo);
++
++  size_t result_len = wrapped_len - mac_len;
++  result_buf = xtrymalloc_secure (result_len);
++  if (!result_buf)
++    {
++      err = gpg_error_from_syserror ();
++      goto exit;
++    }
++
++  size_t ukm_len = (gcry_mpi_get_nbits (ukm) + 7)/8;
++  ukm_buf = xmalloc (ukm_len);
++  if (!ukm_buf)
++    {
++      err = gpg_error_from_syserror ();
++      goto exit;
++    }
++
++  unsigned int kek_len = gcry_cipher_get_algo_keylen (cipher_algo);
++  unsigned int kek_nbits;
++  unsigned char *kek_buf = gcry_mpi_get_opaque (kek, &kek_nbits);
++  if (!kek_buf)
++    {
++      err = gpg_error_from_syserror ();
++      goto exit;
++    }
++  if ((kek_nbits + 7)/8 != kek_len)
++    {
++      err = GPG_ERR_INV_KEYLEN;
++      goto exit;
++    }
++
++  err = gcry_cipher_setkey (cipher_hd, kek_buf, kek_len);
++  if (err) goto exit;
++
++  err = set_cipher_sbox (cipher_hd, cipher_sbox);
++  if (err) goto exit;
++
++  err = gcry_cipher_decrypt (cipher_hd, result_buf, result_len,
++                             wrapped, wrapped_len - mac_len);
++  if (err) goto exit;
++
++  if (gcry_mpi_get_flag (ukm, GCRYMPI_FLAG_OPAQUE))
++    {
++      unsigned int ukm_blen;
++      byte *_ukm_buf = gcry_mpi_get_opaque (ukm, &ukm_blen);
++      if (_ukm_buf)
++        memcpy (ukm_buf, _ukm_buf, ukm_len);
++    }
++  else
++    {
++      size_t ukm_wrt;
++      err = gcry_mpi_print (GCRYMPI_FMT_USG, ukm_buf, ukm_len,
++                            &ukm_wrt, ukm);
++      if (err) goto exit;
++      if (ukm_wrt < ukm_len)
++        {
++          memmove (ukm_buf + (ukm_len - ukm_wrt), ukm_buf, ukm_wrt);
++          memset (ukm_buf, 0, ukm_len - ukm_wrt);
++        }
++    }
++  if (err) goto exit;
++  flip_buffer (ukm_buf, ukm_len);
++
++  err = gcry_mac_open (&mac_hd, mac_algo, 0, NULL);
++  if (err) goto exit;
++
++  err = set_mac_sbox (mac_hd, mac_sbox);
++  if (err) goto exit;
++
++  err = gcry_mac_setkey (mac_hd, kek_buf, kek_len);
++  if (err) goto exit;
++  err = gcry_mac_setiv (mac_hd, ukm_buf, ukm_len);
++  if (err) goto exit;
++  err = gcry_mac_write (mac_hd, result_buf, result_len);
++  if (err) goto exit;
++
++  err = gcry_mac_verify (mac_hd, wrapped + (wrapped_len - mac_len), mac_len);
++  if (err) goto exit;
++
++  *result = gcry_mpi_set_opaque_copy (*result, result_buf, 8 * result_len);
++
++ exit:
++  gcry_cipher_close (cipher_hd);
++  gcry_mac_close (mac_hd);
++  xfree (ukm_buf);
++  xfree (result_buf);
++
++  return err;
++}
+diff --git a/common/gost-util.h b/common/gost-util.h
+new file mode 100644
+index 000000000..0e3752959
+--- /dev/null
++++ b/common/gost-util.h
+@@ -0,0 +1,60 @@
++/* gost-util.h - Some common code for GOST crypto.
++ * Copyright (C) 2019 Paul Wolneykien <manowar@altlinux.org>
++ *
++ * This file is part of GnuPG.
++ *
++ * GnuPG is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * GnuPG is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <https://www.gnu.org/licenses/>.
++ */
++
++#ifndef GNUPG_COMMON_GOST_UTIL_H
++#define GNUPG_COMMON_GOST_UTIL_H
++
++#include <gcrypt.h> /* We need this for the memory function protos. */
++#include <errno.h>  /* We need errno.  */
++#include <gpg-error.h> /* We need gpg_error_t and estream. */
++#include "openpgpdefs.h" /* We need gpg_error_t and estream. */
++
++gpg_error_t
++gost_generate_ukm (unsigned int ukm_blen, gcry_mpi_t *r_ukm);
++
++gpg_error_t
++gost_cpdiversify_key (gcry_mpi_t *result,
++                      enum gcry_cipher_algos cipher_algo,
++                      const char *cipher_sbox,
++                      const unsigned char *key, size_t key_len,
++                      gcry_mpi_t ukm);
++
++gpg_error_t
++gost_keywrap (gcry_mpi_t *result,
++              enum gcry_cipher_algos cipher_algo,
++              const char *cipher_sbox,
++              enum gcry_mac_algos mac_algo,
++              const char *mac_sbox,
++              gcry_mpi_t key, gcry_mpi_t ukm, gcry_mpi_t kek);
++
++gpg_error_t
++gost_vko (gcry_mpi_t shared, enum gcry_md_algos digest_algo,
++          const char *digest_params, unsigned char **keyout,
++          size_t *keyout_len);
++
++gpg_error_t
++gost_keyunwrap (gcry_mpi_t *result,
++                enum gcry_cipher_algos cipher_algo,
++                const char *cipher_sbox,
++                enum gcry_mac_algos mac_algo,
++                const char *mac_sbox,
++                const unsigned char *wrapped, size_t wrapped_len,
++                gcry_mpi_t ukm, gcry_mpi_t kek);
++
++#endif /*GNUPG_COMMON_GOST_UTIL_H*/
+diff --git a/common/logging.c b/common/logging.c
+index c4eaca411..0b3f1a72a 100644
+--- a/common/logging.c
++++ b/common/logging.c
+@@ -1026,6 +1026,31 @@ log_printhex (const char *text, const void *buffer, size_t length)
+     log_printf ("\n");
+ }
+ 
++void
++log_printmpi (const char *text, gcry_mpi_t mpi)
++{
++  if (gcry_mpi_get_flag (mpi, GCRYMPI_FLAG_OPAQUE))
++    {
++      unsigned int nbits;
++      void *buf = gcry_mpi_get_opaque (mpi, &nbits);
++      log_printhex (text, buf, (nbits+7)/8);
++    }
++  else
++    {
++      unsigned char *buf;
++      if (text && *text)
++        log_debug ("%s ", text);
++      if (GPG_ERR_NO_ERROR == gcry_mpi_aprint (GCRYMPI_FMT_HEX,
++                                               &buf, NULL, mpi))
++        {
++          log_printf ("%s", buf);
++          xfree (buf);
++        }
++      if (text)
++        log_printf ("\n");
++    }
++}
++
+ 
+ /*
+ void
+diff --git a/common/logging.h b/common/logging.h
+index 2225100cb..8d8011629 100644
+--- a/common/logging.h
++++ b/common/logging.h
+@@ -34,6 +34,7 @@
+ 
+ #include <stdio.h>
+ #include <stdarg.h>
++#include <gcrypt.h>
+ #include <gpg-error.h>
+ #include "mischelp.h"
+ #include "w32help.h"
+@@ -109,6 +110,8 @@ void log_flush (void);
+    by the hexdump and a final LF.  */
+ void log_printhex (const char *text, const void *buffer, size_t length);
+ 
++void log_printmpi (const char *text, gcry_mpi_t mpi);
++
+ void log_clock (const char *string);
+ 
+ 
+diff --git a/common/miscellaneous.c b/common/miscellaneous.c
+index 62ac05a84..f7bbb2d0a 100644
+--- a/common/miscellaneous.c
++++ b/common/miscellaneous.c
+@@ -134,6 +134,20 @@ gnupg_cipher_algo_name (int algo)
+   return s;
+ }
+ 
++/* A wrapper around gcry_pk_algo_name to return the string
++   "ECC (incl. GOST)" instead of "ECC" if GOST is supported. */
++const char *
++gnupg_pk_algo_name (int algo)
++{
++  const char *s;
++
++  s = gcry_pk_algo_name (algo);
++  if (!strcmp (s, "ECC")
++      && openpgp_is_curve_supported ("GOST2012-256-A", NULL, NULL))
++    s = "ECC (incl. GOST)";
++  return s;
++}
++
+ 
+ void
+ obsolete_option (const char *configname, unsigned int configlineno,
+@@ -625,3 +639,35 @@ parse_debug_flag (const char *string, unsigned int *debugvar,
+   *debugvar |= result;
+   return 0;
+ }
++
++void
++flip_buffer (unsigned char *buffer, unsigned int length)
++{
++  unsigned int tmp, i;
++
++  for (i=0; i < length/2; i++) {
++      tmp = buffer[i];
++      buffer[i] = buffer[length-1-i];
++      buffer[length-1-i] = tmp;
++  }
++}
++
++int
++mpi_byte_flip (gcry_mpi_t val, gcry_mpi_t *flipped)
++{
++	int rc;
++	unsigned char *buffer = NULL;
++	size_t len = 0;
++	size_t slen = 0;
++
++	rc = gcry_mpi_aprint (GCRYMPI_FMT_USG, &buffer, &len, val);
++	if (0 == rc && buffer) {
++		flip_buffer (buffer, len);
++		rc = gcry_mpi_scan (flipped, GCRYMPI_FMT_USG, buffer, len, &slen);
++		if (0 == rc && slen != len) rc = 1;
++	}
++
++	if (buffer) gcry_free (buffer);
++
++	return rc;
++}
+diff --git a/common/openpgp-oid.c b/common/openpgp-oid.c
+index 18c5710bd..cdb3972b3 100644
+--- a/common/openpgp-oid.c
++++ b/common/openpgp-oid.c
+@@ -59,6 +59,19 @@ static struct {
+ 
+   { "secp256k1",       "1.3.132.0.10",           256 },
+ 
++  { "GOST2001-test", "1.2.643.2.2.35.0", 256, "GOST2001-test" },
++  { "GOST2001-CryptoPro-A", "1.2.643.2.2.35.1", 256, "GOST2001-CryptoPro-A" },
++  { "GOST2001-CryptoPro-B", "1.2.643.2.2.35.2", 256, "GOST2001-CryptoPro-B" },
++  { "GOST2001-CryptoPro-C", "1.2.643.2.2.35.3", 256, "GOST2001-CryptoPro-C" },
++  { "GOST2001-CryptoPro-XchA", "1.2.643.2.2.36.0", 256, "GOST2001-CryptoPro-XchA" },
++  { "GOST2001-CryptoPro-XchB", "1.2.643.2.2.36.1", 256, "GOST2001-CryptoPro-XchB" },
++  { "GOST2012-256-A", "1.2.643.7.1.2.1.1.1", 256, "GOST2012-256-A" },
++  { "GOST2012-256-B", "1.2.643.7.1.2.1.1.2", 256, "GOST2012-256-B" },
++  { "GOST2012-256-C", "1.2.643.7.1.2.1.1.3", 256, "GOST2012-256-C" },
++  { "GOST2012-256-D", "1.2.643.7.1.2.1.1.4", 256, "GOST2012-256-D" },
++  { "GOST2012-512-A", "1.2.643.7.1.2.1.2.1", 512, "GOST2012-512-A" },
++  { "GOST2012-512-B", "1.2.643.7.1.2.1.2.2", 512, "GOST2012-512-B" },
++
+   { NULL, NULL, 0}
+ };
+ 
+@@ -334,6 +347,49 @@ openpgp_oid_is_cv25519 (gcry_mpi_t a)
+   return openpgp_oidbuf_is_cv25519 (buf, (nbits+7)/8);
+ }
+ 
++/* Returns true if A (str) represents a GOST OID */
++int
++openpgp_oidstr_is_gost (const char *oid)
++{
++	return oid && (0 == strncmp (oid, "1.2.643.2.2.35.", 15) ||
++                   0 == strncmp (oid, "1.2.643.2.2.36.", 15) ||
++                   0 == strncmp (oid, "1.2.643.7.1.2.1.1.", 18) ||
++                   0 == strncmp (oid, "1.2.643.7.1.2.1.2.", 18) ||
++                   0 == strcmp (oid, "1.2.643.2.2.19") ||
++                   0 == strcmp (oid, "1.2.643.7.1.1.1.1") ||
++                   0 == strcmp (oid, "1.2.643.7.1.1.1.2"));
++}
++
++/* Returns true if A represents a GOST OID */
++int
++openpgp_oid_is_gost (gcry_mpi_t a)
++{
++	char *oid = openpgp_oid_to_str (a);
++
++	//FIXME: Use MPI, memcmp as above
++	int result = openpgp_oidstr_is_gost (oid);
++	if (oid) xfree (oid);
++	return result;
++}
++
++int map_key_oid_to_md_openpgp (gcry_mpi_t a)
++{
++	char *oid = openpgp_oid_to_str (a);
++
++	//FIXME: Use MPI, memcmp as above
++    int result;
++    if (0 == strncmp (oid, "1.2.643.2.2.35.", 15) || 0 == strncmp (oid, "1.2.643.2.2.36.", 15))
++      result = DIGEST_ALGO_GOSTR3411_94;
++    else if (0 == strncmp (oid, "1.2.643.7.1.2.1.1.", 18))
++      result = DIGEST_ALGO_GOSTR3411_12_256;
++    else if (0 == strncmp (oid, "1.2.643.7.1.2.1.2.", 18))
++      result = DIGEST_ALGO_GOSTR3411_12_512;
++    else
++      result = 0; // Unknown
++
++	if (oid) xfree (oid);
++	return result;
++}
+ 
+ /* Map the Libgcrypt ECC curve NAME to an OID.  If R_NBITS is not NULL
+    store the bit size of the curve there.  Returns NULL for unknown
+diff --git a/common/openpgpdefs.h b/common/openpgpdefs.h
+index 73776b368..4d02d1e03 100644
+--- a/common/openpgpdefs.h
++++ b/common/openpgpdefs.h
+@@ -137,7 +137,8 @@ typedef enum
+     CIPHER_ALGO_CAMELLIA128 = 11,
+     CIPHER_ALGO_CAMELLIA192 = 12,
+     CIPHER_ALGO_CAMELLIA256 = 13,
+-    CIPHER_ALGO_PRIVATE10   = 110
++    CIPHER_ALGO_PRIVATE10   = 110,
++    CIPHER_ALGO_GOST28147   = 170 /* GCRY_CIPHER_GOST28147 - (255 - 110) */
+   }
+ cipher_algo_t;
+ 
+@@ -169,11 +170,13 @@ typedef enum
+     DIGEST_ALGO_SHA384      =  9,
+     DIGEST_ALGO_SHA512      = 10,
+     DIGEST_ALGO_SHA224      = 11,
+-    DIGEST_ALGO_PRIVATE10   = 110
++    DIGEST_ALGO_PRIVATE10   = 110,
++    DIGEST_ALGO_GOSTR3411_12_256 = 164, /* GCRY_MD_STRIBOG256 - (255 - 110) */
++    DIGEST_ALGO_GOSTR3411_12_512 = 165, /* GCRY_MD_STRIBOG512 - (255 - 110) */
++    DIGEST_ALGO_GOSTR3411_94 = 166      /* GCRY_MD_GOSTR3411_CP - (255 - 110) */
+   }
+ digest_algo_t;
+ 
+-
+ typedef enum
+   {
+     COMPRESS_ALGO_NONE      =  0,
+@@ -184,6 +187,24 @@ typedef enum
+   }
+ compress_algo_t;
+ 
++
++typedef enum
++  {
++    MAC_ALGO_HMAC_MD5 = 106,
++    MAC_ALGO_HMAC_SHA1 = 105,
++    MAC_ALGO_HMAC_RMD160 = 108,
++    MAC_ALGO_HMAC_SHA256 = 101,
++    MAC_ALGO_HMAC_SHA512 = 103,
++    MAC_ALGO_HMAC_SHA384 = 104,
++    MAC_ALGO_HMAC_SHA224 = 102,
++    MAC_ALGO_PRIVATE10 = 110,
++    MAC_ALGO_HMAC_GOSTR3411_94 = 111,
++    MAC_ALGO_HMAC_GOST3411_12_256 = 112,
++    MAC_ALGO_HMAC_GOST3411_12_512 = 113,
++    MAC_ALGO_GOST28147_IMIT = 114
++  }
++mac_algo_t;
++
+ /* Limits to be used for static arrays.  */
+ #define OPENPGP_MAX_NPKEY  5  /* Maximum number of public key parameters. */
+ #define OPENPGP_MAX_NSKEY  7  /* Maximum number of secret key parameters. */
+diff --git a/common/sexputil.c b/common/sexputil.c
+index e8c8a348e..ba0a2ca69 100644
+--- a/common/sexputil.c
++++ b/common/sexputil.c
+@@ -515,6 +515,13 @@ get_rsa_pk_from_canon_sexp (const unsigned char *keydata, size_t keydatalen,
+ /* Return the algo of a public KEY of SEXP. */
+ int
+ get_pk_algo_from_key (gcry_sexp_t key)
++{
++  return get_pk_info_from_key (key, NULL, NULL, NULL);
++}
++
++int
++get_pk_info_from_key (gcry_sexp_t key, char **r_oid, char **r_curve_oid,
++                      char **r_digest_oid)
+ {
+   gcry_sexp_t list;
+   const char *s;
+@@ -552,6 +559,65 @@ get_pk_algo_from_key (gcry_sexp_t key)
+ 	    }
+ 	}
+       gcry_sexp_release (l1);
++
++      if (r_oid || r_curve_oid || r_digest_oid)
++        {
++          const char *curve_oid = NULL;
++          gcry_sexp_t curve = NULL;
++          char *digest_oid = NULL;
++          gcry_sexp_t digest = NULL;
++          const char *oid = NULL;
++
++          curve = gcry_sexp_find_token (list, "curve", 0);
++          if (curve)
++            {
++              char *curvename = gcry_sexp_nth_string (curve, 1);
++              if (curvename)
++                  curve_oid = openpgp_curve_to_oid (curvename, NULL);
++              xfree (curvename);
++            }
++
++          digest = gcry_sexp_find_token (list, "digest", 0);
++          if (digest)
++            digest_oid = gcry_sexp_nth_string (digest, 1);
++
++          if (curve_oid)
++            {
++              if (0 == strncmp (curve_oid, "1.2.643.2.2.35.", 15) ||
++                  0 == strncmp (curve_oid, "1.2.643.2.2.36.", 15))
++                {
++                  /* Check for GOST-2012 256-bit */
++                  if (digest_oid && 0 == strcmp (digest_oid, "1.2.643.7.1.1.2.2"))
++                    oid = "1.2.643.7.1.1.1.1"; // GOST-2012-256
++                  else
++                    oid = "1.2.643.2.2.19"; // GOST-2001
++                }
++              else if (0 == strncmp (curve_oid, "1.2.643.7.1.2.1.1.", 18))
++                oid = "1.2.643.7.1.1.1.1"; // GOST-2012-256
++              else if (0 == strncmp (curve_oid, "1.2.643.7.1.2.1.2.", 18))
++                oid = "1.2.643.7.1.1.1.2"; // GOST-2012-512
++            }
++
++          if (oid && r_oid)
++            {
++              *r_oid = xtrystrdup (oid);
++              if (!*r_oid) algo = 0;
++            }
++
++          if (curve_oid && r_curve_oid)
++            {
++              *r_curve_oid = xtrystrdup (curve_oid);
++              if (!*r_curve_oid) algo = 0;
++            }
++
++          if (digest_oid && r_digest_oid)
++            *r_digest_oid = digest_oid;
++          else
++              xfree (digest_oid);
++
++          gcry_sexp_release (curve);
++          gcry_sexp_release (digest);
++        }
+     }
+ 
+  out:
+@@ -566,6 +632,14 @@ get_pk_algo_from_key (gcry_sexp_t key)
+  * identiier or 0 on error.  */
+ int
+ get_pk_algo_from_canon_sexp (const unsigned char *keydata, size_t keydatalen)
++{
++  return get_pk_info_from_canon_sexp (keydata, keydatalen, NULL, NULL, NULL);
++}
++
++int
++get_pk_info_from_canon_sexp (const unsigned char *keydata,
++                             size_t keydatalen, char **r_oid,
++                             char **r_curve_oid, char **r_digest_oid)
+ {
+   gcry_sexp_t sexp;
+   int algo;
+@@ -573,7 +647,7 @@ get_pk_algo_from_canon_sexp (const unsigned char *keydata, size_t keydatalen)
+   if (gcry_sexp_sscan (&sexp, NULL, keydata, keydatalen))
+     return 0;
+ 
+-  algo = get_pk_algo_from_key (sexp);
++  algo = get_pk_info_from_key (sexp, r_oid, r_curve_oid, r_digest_oid);
+   gcry_sexp_release (sexp);
+   return algo;
+ }
+@@ -640,3 +714,31 @@ pubkey_algo_string (gcry_sexp_t s_pkey, enum gcry_pk_algos *r_algoid)
+   xfree (algoname);
+   return result;
+ }
++
++int
++pkey_is_gost (gcry_sexp_t s_pkey)
++{
++  const char *curve = gcry_pk_get_curve (s_pkey, 0, NULL);
++  const char *name = openpgp_oid_to_curve (openpgp_curve_to_oid (curve,
++                                                                 NULL),
++                                           0);
++  int ret = (name && 0 == strncmp (name, "GOST", 4));
++
++  return ret;
++}
++
++/* FIXME: Better change the function name because mpi_ is used by
++   gcrypt macros.  */
++gcry_mpi_t
++get_mpi_from_sexp (gcry_sexp_t sexp, const char *item, int mpifmt)
++{
++  gcry_sexp_t list;
++  gcry_mpi_t data;
++
++  list = gcry_sexp_find_token (sexp, item, 0);
++  log_assert (list);
++  data = gcry_sexp_nth_mpi (list, 1, mpifmt);
++  log_assert (data);
++  gcry_sexp_release (list);
++  return data;
++}
+diff --git a/common/util.h b/common/util.h
+index 24722227a..18d615be1 100644
+--- a/common/util.h
++++ b/common/util.h
+@@ -197,9 +197,17 @@ gpg_error_t get_rsa_pk_from_canon_sexp (const unsigned char *keydata,
+                                         size_t *r_elen);
+ 
+ int get_pk_algo_from_key (gcry_sexp_t key);
++int get_pk_info_from_key (gcry_sexp_t key, char **r_oid, char **r_curve_oid,
++                          char **r_digest_oid);
+ int get_pk_algo_from_canon_sexp (const unsigned char *keydata,
+                                  size_t keydatalen);
++int get_pk_info_from_canon_sexp (const unsigned char *keydata,
++                                 size_t keydatalen, char **r_oid,
++                                 char **r_curve_oid, char **r_digest_oid);
+ char *pubkey_algo_string (gcry_sexp_t s_pkey, enum gcry_pk_algos *r_algoid);
++int pkey_is_gost (gcry_sexp_t s_pkey);
++
++gcry_mpi_t get_mpi_from_sexp (gcry_sexp_t sexp, const char *item, int mpifmt);
+ 
+ /*-- convert.c --*/
+ int hex2bin (const char *string, void *buffer, size_t length);
+@@ -226,6 +234,9 @@ int openpgp_oidbuf_is_ed25519 (const void *buf, size_t len);
+ int openpgp_oid_is_ed25519 (gcry_mpi_t a);
+ int openpgp_oidbuf_is_cv25519 (const void *buf, size_t len);
+ int openpgp_oid_is_cv25519 (gcry_mpi_t a);
++int openpgp_oid_is_gost (gcry_mpi_t a);
++int openpgp_oidstr_is_gost (const char *oid);
++int map_key_oid_to_md_openpgp (gcry_mpi_t a);
+ const char *openpgp_curve_to_oid (const char *name, unsigned int *r_nbits);
+ const char *openpgp_oid_to_curve (const char *oid, int canon);
+ const char *openpgp_enum_curves (int *idxp);
+@@ -297,6 +308,7 @@ char *xtryasprintf (const char *fmt, ...) GPGRT_ATTR_PRINTF(1,2);
+ 
+ /* Replacement for gcry_cipher_algo_name.  */
+ const char *gnupg_cipher_algo_name (int algo);
++const char *gnupg_pk_algo_name (int algo);
+ 
+ void obsolete_option (const char *configname, unsigned int configlineno,
+                       const char *name);
+@@ -327,6 +339,9 @@ struct debug_flags_s
+ int parse_debug_flag (const char *string, unsigned int *debugvar,
+                       const struct debug_flags_s *flags);
+ 
++void flip_buffer (unsigned char *buffer, unsigned int length);
++int mpi_byte_flip (gcry_mpi_t val, gcry_mpi_t *flipped);
++
+ 
+ /*-- Simple replacement functions. */
+ 
+diff --git a/g10/pkglue.c b/g10/pkglue.c
+index 8021a94db..7e9883431 100644
+--- a/g10/pkglue.c
++++ b/g10/pkglue.c
+@@ -30,24 +30,6 @@
+ #include "main.h"
+ #include "options.h"
+ 
+-/* FIXME: Better change the function name because mpi_ is used by
+-   gcrypt macros.  */
+-gcry_mpi_t
+-get_mpi_from_sexp (gcry_sexp_t sexp, const char *item, int mpifmt)
+-{
+-  gcry_sexp_t list;
+-  gcry_mpi_t data;
+-
+-  list = gcry_sexp_find_token (sexp, item, 0);
+-  log_assert (list);
+-  data = gcry_sexp_nth_mpi (list, 1, mpifmt);
+-  log_assert (data);
+-  gcry_sexp_release (list);
+-  return data;
+-}
+-
+-
+-
+ /****************
+  * Emulate our old PK interface here - sometime in the future we might
+  * change the internal design to directly fit to libgcrypt.

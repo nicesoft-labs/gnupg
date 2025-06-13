@@ -1,0 +1,459 @@
+ dirmngr/crlcache.c |  52 +++++++++++--
+ dirmngr/dirmngr.c  | 223 +++++++++++++++++++++++++++++++++++++++++++++++++----
+ dirmngr/dirmngr.h  |  17 ++++
+ 3 files changed, 271 insertions(+), 21 deletions(-)
+
+diff --git a/dirmngr/crlcache.c b/dirmngr/crlcache.c
+index 52f49c093..56bf700a8 100644
+--- a/dirmngr/crlcache.c
++++ b/dirmngr/crlcache.c
+@@ -2448,18 +2448,56 @@ crl_cache_reload_crl (ctrl_t ctrl, ksba_cert_t cert)
+   char *issuername_uri = NULL;
+   int any_dist_point = 0;
+   int seq;
++  ksba_isotime_t not_before, not_after;
++
++  issuer = ksba_cert_get_issuer (cert, 0);
++  err = ksba_cert_get_validity (cert, 0, not_before);
++  if (!err) err = ksba_cert_get_validity (cert, 1, not_after);
++  if (err)
++	{
++		log_error (_("certificate with invalid validity: %s"),
++				   gpg_strerror (err));
++		err = gpg_error (GPG_ERR_BAD_CERT);
++		goto leave;
++	}
++
++  if (opt.verbose)
++	{
++		log_info ("checking distribution points:\n");
++		log_info ("\tIssuer: %s\n", issuer);
++		log_info ("\tValidity: %s--%s\n", not_before, not_after);
++	}
++
++  int single_crl_mode = 0;
++  issuer_conf_t issuer_conf;
++  for (issuer_conf = opt.issuers_conf; issuer_conf;
++	   issuer_conf = issuer_conf->next)
++	{
++	  if (issuer_conf->issuer &&
++		  strncmp (issuer_conf->issuer, issuer,
++				   strlen (issuer_conf->issuer)) != 0)
++		continue;
++	  if (issuer_conf->not_before[0] &&
++		  issuer_conf->not_before > not_before)
++		continue;
++	  if (issuer_conf->not_after[0] &&
++		  issuer_conf->not_after < not_after)
++		continue;
++	  single_crl_mode = issuer_conf->single_crl;
++	}
++
++  if (opt.verbose)
++	log_info ("Single CRL mode is %s\n", single_crl_mode ? "ON" : "OFF");
+ 
+   /* Loop over all distribution points, get the CRLs and put them into
+      the cache. */
+-  if (opt.verbose)
+-    log_info ("checking distribution points\n");
+   seq = 0;
++  gpg_error_t last_err = 0;
+   while ( !(err = ksba_cert_get_crl_dist_point (cert, seq++,
+                                                 &distpoint,
+                                                 &issuername, NULL )))
+     {
+       int name_seq;
+-      gpg_error_t last_err = 0;
+ 
+       if (!distpoint && !issuername)
+         {
+@@ -2522,7 +2560,7 @@ crl_cache_reload_crl (ctrl_t ctrl, ksba_cert_t cert)
+           last_err = 0;
+           break; /* Ready. */
+         }
+-      if (last_err)
++      if (last_err && !single_crl_mode)
+         {
+           err = last_err;
+           goto leave;
+@@ -2539,8 +2577,11 @@ crl_cache_reload_crl (ctrl_t ctrl, ksba_cert_t cert)
+       crl_close_reader (reader);
+       reader = NULL;
+     }
++
+   if (gpg_err_code (err) == GPG_ERR_EOF)
+-    err = 0;
++	  err = 0;
++  if (!err && last_err)
++	  err = last_err;
+ 
+   /* If we did not found any distpoint, try something reasonable. */
+   if (!any_dist_point )
+@@ -2551,7 +2592,6 @@ crl_cache_reload_crl (ctrl_t ctrl, ksba_cert_t cert)
+       crl_close_reader (reader);
+       reader = NULL;
+ 
+-      issuer = ksba_cert_get_issuer (cert, 0);
+       if (!issuer)
+         {
+           log_error ("oops: issuer missing in certificate\n");
+diff --git a/dirmngr/dirmngr.c b/dirmngr/dirmngr.c
+index 998a605d3..acde9174e 100644
+--- a/dirmngr/dirmngr.c
++++ b/dirmngr/dirmngr.c
+@@ -152,6 +152,7 @@ enum cmd_and_opt_values {
+   oConnectTimeout,
+   oConnectQuickTimeout,
+   oListenBacklog,
++  oIssuersFile,
+   aTest
+ };
+ 
+@@ -258,6 +259,8 @@ static ARGPARSE_OPTS opts[] = {
+   ARGPARSE_s_i (oConnectTimeout, "connect-timeout", "@"),
+   ARGPARSE_s_i (oConnectQuickTimeout, "connect-quick-timeout", "@"),
+   ARGPARSE_s_i (oListenBacklog, "listen-backlog", "@"),
++  ARGPARSE_s_s (oIssuersFile, "issuers-file",
++                N_("|FILE|read per-issuer configuration options from FILE")),
+ 
+   ARGPARSE_group (302,N_("@\n(See the \"info\" manual for a complete listing "
+                          "of all commands and options)\n")),
+@@ -377,6 +380,7 @@ static ldap_server_t parse_ldapserver_file (const char* filename);
+ static fingerprint_list_t parse_ocsp_signer (const char *string);
+ static void netactivity_action (void);
+ static void handle_connections (assuan_fd_t listen_fd);
++static issuer_conf_t parse_issuers_conffile (const char* issuersfile);
+ 
+ /* NPth wrapper function definitions. */
+ ASSUAN_SYSTEM_NPTH_IMPL;
+@@ -815,6 +819,31 @@ thread_init (void)
+ #endif /*!HAVE_W32_SYSTEM*/
+ }
+ 
++static void
++log_issuers_conf ()
++{
++  issuer_conf_t issuer = opt.issuers_conf;
++
++  if (issuer)
++	{
++	  log_info ("Configured issuers:\n");
++	  while (issuer) {
++		log_info ("\t%s",
++				  (issuer->issuer && issuer->issuer[0]) ?
++				    issuer->issuer : "ALL");
++		if (issuer->not_before[0] || issuer->not_after[0])
++		  log_printf (" (%s--%s)",
++					issuer->not_before[0] ?
++					  issuer->not_before : "...",
++					issuer->not_after[0] ?
++					  issuer->not_after : "...");
++		log_printf (", single CRL: %s;\n",
++					issuer->single_crl ?
++					  "on" : "off");
++		issuer = issuer->next;
++	  }
++	}
++}
+ 
+ int
+ main (int argc, char **argv)
+@@ -840,6 +869,7 @@ main (int argc, char **argv)
+   int debug_wait = 0;
+   int rc;
+   struct assuan_malloc_hooks malloc_hooks;
++  char *issuersfile = NULL;
+ 
+   early_system_init ();
+   set_strusage (my_strusage);
+@@ -1012,6 +1042,9 @@ main (int argc, char **argv)
+           ldapfile = pargs.r.ret_str;
+ #        endif /*USE_LDAP*/
+           break;
++	case oIssuersFile:
++          issuersfile = pargs.r.ret_str;
++          break;
+ 	case oLDAPAddServers: opt.add_new_ldapservers = 1; break;
+ 	case oLDAPTimeout:
+ 	  opt.ldaptimeout = pargs.r.ret_int;
+@@ -1101,11 +1134,26 @@ main (int argc, char **argv)
+                                 NULL);
+       opt.ldapservers = parse_ldapserver_file (ldapfile);
+       xfree (ldapfile);
++	  ldapfile = NULL;
+     }
+   else
+       opt.ldapservers = parse_ldapserver_file (ldapfile);
+ #endif /*USE_LDAP*/
+ 
++  if (issuersfile)
++	  opt.issuers_conf = parse_issuers_conffile (issuersfile);
++  else
++	{
++	  issuersfile = make_filename (gnupg_homedir (),
++								   "dirmngr_issuers.conf",
++								   NULL);
++	  opt.issuers_conf = parse_issuers_conffile (issuersfile);
++	  xfree (issuersfile);
++	  issuersfile = NULL;
++	}
++
++  log_issuers_conf ();
++
+ #ifndef HAVE_W32_SYSTEM
+   /* We need to ignore the PIPE signal because the we might log to a
+      socket and that code handles EPIPE properly.  The ldap wrapper
+@@ -1615,30 +1663,33 @@ dirmngr_deinit_default_ctrl (ctrl_t ctrl)
+    5. field: Base DN
+ 
+ */
+-#if USE_LDAP
+-static ldap_server_t
+-parse_ldapserver_file (const char* filename)
++
++typedef gpg_error_t (*line_parser_f)(void *start, char *buf,
++									 size_t len, const char *filename,
++									 unsigned int lineno);
++
++static gpg_error_t
++parse_multiline_file (const char* filename, void *start,
++					  line_parser_f line_parser)
+ {
+   char buffer[1024];
+   char *p;
+-  ldap_server_t server, serverstart, *serverend;
+   int c;
+   unsigned int lineno = 0;
+   estream_t fp;
++  gpg_error_t err = GPG_ERR_NO_ERROR;
+ 
+   fp = es_fopen (filename, "r");
+   if (!fp)
+     {
+       if (errno == ENOENT)
+-        log_info ("No ldapserver file at: '%s'\n", filename);
++        log_info ("No configuration file at: '%s'\n", filename);
+       else
+         log_error (_("error opening '%s': %s\n"), filename,
+                    strerror (errno));
+       return NULL;
+     }
+ 
+-  serverstart = NULL;
+-  serverend = &serverstart;
+   while (es_fgets (buffer, sizeof buffer, fp))
+     {
+       lineno++;
+@@ -1662,19 +1713,59 @@ parse_ldapserver_file (const char* filename)
+         continue;
+ 
+       /* Parse the colon separated fields. */
+-      server = ldapserver_parse_one (buffer, filename, lineno);
+-      if (server)
+-        {
+-          *serverend = server;
+-          serverend = &server->next;
+-        }
++      err = line_parser (start, buffer, strlen (buffer), filename, lineno);
++      if (err != GPG_ERR_NO_ERROR)
++		break;
+     }
+ 
+   if (es_ferror (fp))
+-    log_error (_("error reading '%s': %s\n"), filename, strerror (errno));
++	{
++	  if (err == GPG_ERR_NO_ERROR)
++		err = gpg_error_from_syserror ();
++	  //log_error (_("error reading '%s': %s\n"), filename, strerror (errno));
++	}
+   es_fclose (fp);
+ 
+-  return serverstart;
++  return err;
++}
++
++#if USE_LDAP
++static gpg_error_t
++ldap_line_parser (void *start, char *buf, size_t len, const char *filename,
++				  unsigned int lineno)
++{
++  ldap_server_t *end = (ldap_server_t *) start;
++  ldap_server_t new_server = ldapserver_parse_one (buf, filename, lineno);
++
++  if (new_server)
++	{
++	  if (*end)
++		{
++		  while ( (*end)->next )
++			{
++			  end = &((*end)->next);
++			}
++		}
++	  *end = new_server;
++	}
++
++  return GPG_ERR_NO_ERROR;
++}
++
++static ldap_server_t
++parse_ldapserver_file (const char* filename)
++{
++  ldap_server_t servers = NULL;
++  gpg_error_t err = GPG_ERR_NO_ERROR;
++
++  err = parse_multiline_file (filename, &servers, ldap_line_parser);
++  if (err != GPG_ERR_NO_ERROR)
++	{
++	  log_error (_("error parsing '%s': %s\n"), filename, gpg_strerror (err));
++	  return NULL;
++	}
++  else
++	return servers;
+ }
+ #endif /*USE_LDAP*/
+ 
+@@ -1799,7 +1890,109 @@ parse_ocsp_signer (const char *string)
+   /*NOTREACHED*/
+ }
+ 
++static gpg_error_t
++issuer_parse_datetime (gcry_sexp_t sexp, const char *token,
++					   ksba_isotime_t target)
++{
++  gpg_error_t err = GPG_ERR_NO_ERROR;
++
++  struct tm tm;
++  memset (&tm, 0, sizeof tm);
++  memset (target, 0, sizeof (ksba_isotime_t));
++
++  gcry_sexp_t sublist = gcry_sexp_find_token (sexp, token, 0);
++  if (sublist)
++	{
++	  char *val = gcry_sexp_nth_string (sublist, 1);
++	  if (!val || !strptime (val, "%Y-%m-%d %H:%M:%S", &tm))
++		err = GPG_ERR_NOT_SUPPORTED;
++	  else
++		strftime (target, sizeof (ksba_isotime_t), "%Y%m%dT%H%M%S", &tm);
++	  gcry_free (val);
++	}
++
++  return err;
++}
++
++static gpg_error_t
++issuer_line_parser (void *start, char *buf, size_t len, const char *filename,
++					unsigned int lineno)
++{
++  issuer_conf_t *end = (issuer_conf_t *) start;
++  gcry_sexp_t issuer_sexp = NULL;
++  issuer_conf_t new_issuer = NULL;
++  char *s_type = NULL;
++  gpg_error_t err = GPG_ERR_NO_ERROR;
++
++  err = gcry_sexp_new (&issuer_sexp, buf, len, 1);
++  if (err != GPG_ERR_NO_ERROR)
++	return err;
++
++  s_type = gcry_sexp_nth_string (issuer_sexp, 0);
++  if (!s_type || strcmp (s_type, "issuer") != 0)
++	goto exit;
++
++  new_issuer = gcry_malloc (sizeof *new_issuer);
++  if (!new_issuer)
++	{
++	  err = gpg_error_from_syserror ();
++	  goto exit;
++	}
++
++  new_issuer->issuer = gcry_sexp_nth_string (issuer_sexp, 1);
++
++  err = issuer_parse_datetime (issuer_sexp, "not-before",
++							   new_issuer->not_before);
++  if (err != GPG_ERR_NO_ERROR)
++	goto exit;
++  err = issuer_parse_datetime (issuer_sexp, "not-after",
++							   new_issuer->not_after);
++  if (err != GPG_ERR_NO_ERROR)
++	goto exit;
++
++
++  int i;
++  int issuer_sexp_len = gcry_sexp_length (issuer_sexp);
++  for ( i = 0; i < issuer_sexp_len; i++)
++	{
++	  char *nth_str =  gcry_sexp_nth_string (issuer_sexp, i);
++	  if (strcmp (nth_str, "single-crl") == 0)
++		new_issuer->single_crl = 1;
++	  gcry_free (nth_str);
++	}
++
++ exit:
++
++  if (err == GPG_ERR_NO_ERROR && *end)
++	{
++	  while ( (*end)->next )
++		{
++		  end = &((*end)->next);
++		}
++	}
++  *end = new_issuer;
++
++  gcry_sexp_release (issuer_sexp);
++  gcry_free (s_type);
++
++  return GPG_ERR_NO_ERROR;
++}
++
++static issuer_conf_t
++parse_issuers_conffile (const char* filename)
++{
++  issuer_conf_t issuers = NULL;
++  gpg_error_t err = GPG_ERR_NO_ERROR;
+ 
++  err = parse_multiline_file (filename, &issuers, issuer_line_parser);
++  if (err != GPG_ERR_NO_ERROR)
++	{
++	  log_error (_("error parsing '%s': %s\n"), filename, gpg_strerror (err));
++	  return NULL;
++	}
++  else
++	return issuers;
++}
+ 
+ 
+ /*
+diff --git a/dirmngr/dirmngr.h b/dirmngr/dirmngr.h
+index 1663ed14d..41c938532 100644
+--- a/dirmngr/dirmngr.h
++++ b/dirmngr/dirmngr.h
+@@ -74,6 +74,21 @@ struct fingerprint_list_s
+   char hexfpr[20+20+1];
+ };
+ 
++/* This objects keep configuration options for particular certificate
++issuers. */
++struct issuer_conf_s
++{
++  struct issuer_conf_s* next;
++
++  /* Selector */
++  const char *issuer;
++  ksba_isotime_t not_before;
++  ksba_isotime_t not_after;
++
++  /* Options */
++  int single_crl;
++};
++typedef struct issuer_conf_s *issuer_conf_t;
+ 
+ /* A large struct named "opt" to keep global flags.  */
+ struct
+@@ -139,6 +154,8 @@ struct
+                                        current after nextUpdate. */
+ 
+   strlist_t keyserver;              /* List of default keyservers.  */
++
++  issuer_conf_t issuers_conf;       /* Per-issuer configuration params. */
+ } opt;
+ 
+ 
