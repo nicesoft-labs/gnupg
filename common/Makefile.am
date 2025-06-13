@@ -96,9 +96,10 @@ common_sources = \
 	ksba-io-support.c ksba-io-support.h \
 	openpgp-fpr.c \
 	comopt.c comopt.h \
-	compliance.c compliance.h \
-	pkscreening.c pkscreening.h \
-	kem.c
+        compliance.c compliance.h \
+       gost-util.h gost-util.c \
+        pkscreening.c pkscreening.h \
+        kem.c
 
 if HAVE_W32_SYSTEM
 common_sources += w32-reg.c w32-cmdline.c
