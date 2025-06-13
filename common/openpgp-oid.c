@@ -77,6 +77,25 @@ static struct {
 
   { "secp256k1",       "1.3.132.0.10",           256 },
 
+  /* GOST curves */
+  { "GOST2001-test",          "1.2.643.2.2.35.0",    256, "GOST2001-test" },
+  { "GOST2001-CryptoPro-A",   "1.2.643.2.2.35.1",    256,
+                            "GOST2001-CryptoPro-A" },
+  { "GOST2001-CryptoPro-B",   "1.2.643.2.2.35.2",    256,
+                            "GOST2001-CryptoPro-B" },
+  { "GOST2001-CryptoPro-C",   "1.2.643.2.2.35.3",    256,
+                            "GOST2001-CryptoPro-C" },
+  { "GOST2001-CryptoPro-XchA", "1.2.643.2.2.36.0",   256,
+                            "GOST2001-CryptoPro-XchA" },
+  { "GOST2001-CryptoPro-XchB", "1.2.643.2.2.36.1",   256,
+                            "GOST2001-CryptoPro-XchB" },
+  { "GOST2012-256-A",         "1.2.643.7.1.2.1.1.1", 256, "GOST2012-256-A" },
+  { "GOST2012-256-B",         "1.2.643.7.1.2.1.1.2", 256, "GOST2012-256-B" },
+  { "GOST2012-256-C",         "1.2.643.7.1.2.1.1.3", 256, "GOST2012-256-C" },
+  { "GOST2012-256-D",         "1.2.643.7.1.2.1.1.4", 256, "GOST2012-256-D" },
+  { "GOST2012-512-A",         "1.2.643.7.1.2.1.2.1", 512, "GOST2012-512-A" },
+  { "GOST2012-512-B",         "1.2.643.7.1.2.1.2.2", 512, "GOST2012-512-B" },
+
   { NULL, NULL, 0}
 };
 
@@ -408,6 +427,54 @@ openpgp_oid_is_cv25519 (gcry_mpi_t a)
 
   buf = gcry_mpi_get_opaque (a, &nbits);
   return openpgp_oidbuf_is_cv25519 (buf, (nbits+7)/8);
+}
+
+
+/* Returns true if OIDSTR denotes a GOST curve OID.  */
+int
+openpgp_oidstr_is_gost (const char *oidstr)
+{
+  return (oidstr
+          && (0 == strncmp (oidstr, "1.2.643.2.2.35.", 15)
+              || 0 == strncmp (oidstr, "1.2.643.2.2.36.", 15)
+              || 0 == strncmp (oidstr, "1.2.643.7.1.2.1.1.", 18)
+              || 0 == strncmp (oidstr, "1.2.643.7.1.2.1.2.", 18)
+              || !strcmp (oidstr, "1.2.643.2.2.19")
+              || !strcmp (oidstr, "1.2.643.7.1.1.1.1")
+              || !strcmp (oidstr, "1.2.643.7.1.1.1.2")));
+}
+
+/* Returns true if the MPI A represents a GOST curve OID.  */
+int
+openpgp_oid_is_gost (gcry_mpi_t a)
+{
+  char *oidstr = openpgp_oid_to_str (a);
+  int result = openpgp_oidstr_is_gost (oidstr);
+  xfree (oidstr);
+  return result;
+}
+
+/* Map a curve OID to the corresponding digest algorithm used with
+ * that curve in OpenPGP.  Returns 0 if the curve is not recognized.  */
+int
+map_key_oid_to_md_openpgp (gcry_mpi_t a)
+{
+  char *oidstr = openpgp_oid_to_str (a);
+  int result;
+
+  if (oidstr
+      && (0 == strncmp (oidstr, "1.2.643.2.2.35.", 15)
+          || 0 == strncmp (oidstr, "1.2.643.2.2.36.", 15)))
+    result = DIGEST_ALGO_GOSTR3411_94;
+  else if (oidstr && 0 == strncmp (oidstr, "1.2.643.7.1.2.1.1.", 18))
+    result = DIGEST_ALGO_GOSTR3411_12_256;
+  else if (oidstr && 0 == strncmp (oidstr, "1.2.643.7.1.2.1.2.", 18))
+    result = DIGEST_ALGO_GOSTR3411_12_512;
+  else
+    result = 0;
+
+  xfree (oidstr);
+  return result;
 }
 
 

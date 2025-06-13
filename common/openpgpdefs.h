@@ -145,7 +145,8 @@ typedef enum
     CIPHER_ALGO_CAMELLIA128 = 11,
     CIPHER_ALGO_CAMELLIA192 = 12,
     CIPHER_ALGO_CAMELLIA256 = 13,
-    CIPHER_ALGO_PRIVATE10   = 110
+    CIPHER_ALGO_PRIVATE10   = 110,
+    CIPHER_ALGO_GOST28147   = 170 /* GCRY_CIPHER_GOST28147 - (255 - 110) */
   }
 cipher_algo_t;
 
@@ -173,6 +174,8 @@ typedef enum
     PUBKEY_ALGO_ELGAMAL     = 20, /* Elgamal encrypt+sign (legacy).  */
     /*                        21     reserved by OpenPGP.            */
     PUBKEY_ALGO_EDDSA       = 22, /* EdDSA.                          */
+    PUBKEY_ALGO_GOST12_256  = 33, /* GOST R 34.10-2012, 256 bit. */
+    PUBKEY_ALGO_GOST12_512  = 34, /* GOST R 34.10-2012, 512 bit. */
     /*                        29     (was fips203.ipd.2023-08-24 in 1.5.0)   */
     PUBKEY_ALGO_DIL3_25519  = 35, /* Dilithium3 + Ed25519 (aka ML-DSA-65)    */
     PUBKEY_ALGO_DIL5_448    = 36, /* Dilithium5 + Ed448   (aka ML-DSA-87)    */
@@ -192,9 +195,15 @@ typedef enum
     DIGEST_ALGO_SHA384      =  9,
     DIGEST_ALGO_SHA512      = 10,
     DIGEST_ALGO_SHA224      = 11,
-    DIGEST_ALGO_PRIVATE10   = 110
+    DIGEST_ALGO_PRIVATE10   = 110,
+    DIGEST_ALGO_GOSTR3411_12_256 = 164, /* GCRY_MD_STRIBOG256 - (255 - 110) */
+    DIGEST_ALGO_GOSTR3411_12_512 = 165, /* GCRY_MD_STRIBOG512 - (255 - 110) */
+    DIGEST_ALGO_GOSTR3411_94 = 166      /* GCRY_MD_GOSTR3411_CP - (255 - 110) */
   }
 digest_algo_t;
+
+#define DIGEST_ALGO_STREEBOG256 DIGEST_ALGO_GOSTR3411_12_256
+#define DIGEST_ALGO_STREEBOG512 DIGEST_ALGO_GOSTR3411_12_512
 
 
 typedef enum
