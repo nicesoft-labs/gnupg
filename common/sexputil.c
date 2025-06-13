@@ -132,6 +132,32 @@ log_printsexp (const char *text, gcry_sexp_t sexp)
     log_printf ("\n");
 }
 
+/* Print the MPI MPI using hex format.  If TEXT is not NULL it is
+ * printed before the value, followed by a newline.  */
+void
+log_printmpi (const char *text, gcry_mpi_t mpi)
+{
+  if (gcry_mpi_get_flag (mpi, GCRYMPI_FLAG_OPAQUE))
+    {
+      unsigned int nbits;
+      void *buf = gcry_mpi_get_opaque (mpi, &nbits);
+      log_printhex (text, buf, (nbits+7)/8);
+    }
+  else
+    {
+      unsigned char *buf;
+      if (text && *text)
+        log_debug ("%s ", text);
+      if (!gcry_mpi_aprint (GCRYMPI_FMT_HEX, &buf, NULL, mpi))
+        {
+          log_printf ("%s", buf);
+          gcry_free (buf);
+        }
+      if (text)
+        log_printf ("\n");
+    }
+}
+
 
 /* Helper function to create a canonical encoded S-expression from a
    Libgcrypt S-expression object.  The function returns 0 on success
@@ -1137,6 +1163,16 @@ pubkey_algo_to_string (int algo)
     return "EdDSA";
   else
     return gcry_pk_algo_name (algo);
+}
+
+/* Return true if the given public key uses a GOST curve.  */
+int
+pkey_is_gost (gcry_sexp_t s_pkey)
+{
+  const char *curve = gcry_pk_get_curve (s_pkey, 0, NULL);
+  const char *name =
+    openpgp_oid_to_curve (openpgp_curve_to_oid (curve, NULL, NULL, 0), 0);
+  return name && !strncmp (name, "GOST", 4);
 }
 
 

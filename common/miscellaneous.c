@@ -123,6 +123,21 @@ gnupg_cipher_algo_name (int algo)
   return s;
 }
 
+/* Wrapper around gcry_pk_algo_name.  If GOST curves are supported we
+ * advertise that fact by returning "ECC (incl. GOST)" instead of the
+ * plain "ECC".  */
+const char *
+gnupg_pk_algo_name (int algo)
+{
+  const char *s;
+
+  s = gcry_pk_algo_name (algo);
+  if (!strcmp (s, "ECC")
+      && openpgp_is_curve_supported ("GOST2012-256-A", NULL, NULL))
+    s = "ECC (incl. GOST)";
+  return s;
+}
+
 
 void
 obsolete_option (const char *configname, unsigned int configlineno,
@@ -559,6 +574,44 @@ parse_debug_flag (const char *string, unsigned int *debugvar,
         {
           if (*words[i])
             {
+/* Reverse the byte order of BUFFER of length LENGTH.  */
+void
+flip_buffer (unsigned char *buffer, unsigned int length)
+{
+  unsigned int i;
+  unsigned char tmp;
+
+  for (i = 0; i < length/2; i++)
+    {
+      tmp = buffer[i];
+      buffer[i] = buffer[length-1-i];
+      buffer[length-1-i] = tmp;
+    }
+}
+
+/* Store VAL with its byte order reversed in FLIPPED.  */
+int
+mpi_byte_flip (gcry_mpi_t val, gcry_mpi_t *flipped)
+{
+  int rc;
+  unsigned char *buffer = NULL;
+  size_t len = 0;
+  size_t slen = 0;
+
+  rc = gcry_mpi_aprint (GCRYMPI_FMT_USG, &buffer, &len, val);
+  if (!rc && buffer)
+    {
+      flip_buffer (buffer, len);
+      rc = gcry_mpi_scan (flipped, GCRYMPI_FMT_USG, buffer, len, &slen);
+      if (!rc && slen != len)
+        rc = 1;
+    }
+
+  if (buffer)
+    gcry_free (buffer);
+  return rc;
+}
+
               for (j=0; flags[j].name; j++)
                 if (!strcmp (words[i], flags[j].name))
                   {

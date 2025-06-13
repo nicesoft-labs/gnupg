@@ -153,6 +153,7 @@ char *canon_sexp_to_string (const unsigned char *canon, size_t canonlen);
 void log_printcanon (const char *text,
                      const unsigned char *sexp, size_t sexplen);
 void log_printsexp (const char *text, gcry_sexp_t sexp);
+void log_printmpi (const char *text, gcry_mpi_t mpi);
 
 gpg_error_t make_canon_sexp (gcry_sexp_t sexp,
                              unsigned char **r_buffer, size_t *r_buflen);
@@ -196,6 +197,7 @@ const char *pubkey_algo_to_string (int algo);
 const char *hash_algo_to_string (int algo);
 const char *cipher_mode_to_string (int mode);
 const char *get_ecc_curve_from_key (gcry_sexp_t key);
+int pkey_is_gost (gcry_sexp_t s_pkey);
 
 /*-- convert.c --*/
 int hex2bin (const char *string, void *buffer, size_t length);
@@ -346,6 +348,7 @@ char *xtryasprintf (const char *fmt, ...) GPGRT_ATTR_PRINTF(1,2);
 
 /* Replacement for gcry_cipher_algo_name.  */
 const char *gnupg_cipher_algo_name (int algo);
+const char *gnupg_pk_algo_name (int algo);
 
 void obsolete_option (const char *configname, unsigned int configlineno,
                       const char *name);
@@ -374,6 +377,9 @@ struct debug_flags_s
 };
 int parse_debug_flag (const char *string, unsigned int *debugvar,
                       const struct debug_flags_s *flags);
+
+void flip_buffer (unsigned char *buffer, unsigned int length);
+int mpi_byte_flip (gcry_mpi_t val, gcry_mpi_t *flipped);
 
 struct compatibility_flags_s
 {
