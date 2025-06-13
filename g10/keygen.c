@@ -1572,31 +1572,11 @@ ecckey_from_sexp (gcry_mpi_t *array, gcry_sexp_t sexp,
       list = gcry_sexp_find_token (sexp2, "public-key", 0);
       if (!list)
         {
-  else if (algo == PUBKEY_ALGO_ECDH ||
-         algo == PUBKEY_ALGO_GOST12_256 ||
-         algo == PUBKEY_ALGO_GOST12_512)
-{
-    if (openpgp_oidstr_is_gost(oidstr)) {
-        err = pk_gost_default_params(oidstr, nbits, &array[2]);
-        if (err)
-            goto leave;
-    } else {
-        array[2] = pk_ecdh_default_params(nbits);
-        if (!array[2]) {
-            err = gpg_error_from_syserror();
-            goto leave;
+          err = gpg_error (GPG_ERR_INV_OBJ);
+          goto leave;
         }
-    }
-}
-
-      else
-        {
-          array[2] = pk_ecdh_default_params (nbits);
-          if (!array[2])
-            {
-              err = gpg_error_from_syserror ();
-              goto leave;
-            }
+      l2 = gcry_sexp_cadr (list);
+      gcry_sexp_release (list);
       list = l2;
       if (!list)
         {
@@ -1620,11 +1600,20 @@ ecckey_from_sexp (gcry_mpi_t *array, gcry_sexp_t sexp,
     }
   else if (algo == PUBKEY_ALGO_ECDH)
     {
-      array[2] = pk_ecdh_default_params (nbits);
-      if (!array[2])
+	if (openpgp_oidstr_is_gost (oidstr))
         {
-          err = gpg_error_from_syserror ();
-          goto leave;
+          err = pk_gost_default_params (oidstr, nbits, &array[2]);
+          if (err)
+            goto leave;
+        }
+      else
+        {
+          array[2] = pk_ecdh_default_params (nbits);
+          if (!array[2])
+            {
+              err = gpg_error_from_syserror ();
+              goto leave;
+            }
         }
     }
 
@@ -1768,12 +1757,6 @@ do_create_from_keygrip (ctrl_t ctrl, int algo,
       if (err)
         {
           xfree (hexkeygrip_buffer);
-  else if (algo == PUBKEY_ALGO_ECDSA || algo == PUBKEY_ALGO_EDDSA ||
-           algo == PUBKEY_ALGO_ECDH || algo == PUBKEY_ALGO_GOST12_256 ||
-           algo == PUBKEY_ALGO_GOST12_512)
-    {
-      ;
-    }
           return err;
         }
       if (hexkeygrip2)
@@ -1800,6 +1783,13 @@ do_create_from_keygrip (ctrl_t ctrl, int algo,
   /* For X448 and Kyber we force the use of v5 packets.  */
   if (curve_is_448 (s_key) || algo == PUBKEY_ALGO_KYBER)
     *keygen_flags |= KEYGEN_FLAG_CREATE_V5_KEY;
+
+else if (algo == PUBKEY_ALGO_ECDSA || algo == PUBKEY_ALGO_EDDSA ||
+         algo == PUBKEY_ALGO_ECDH || algo == PUBKEY_ALGO_GOST12_256 ||
+         algo == PUBKEY_ALGO_GOST12_512)
+  {
+    ;
+  }
 
   /* Build a public key packet.  */
   pk = xtrycalloc (1, sizeof *pk);
@@ -1936,9 +1926,7 @@ common_gen (const char *keyparms, const char *keyparms2,
       err = common_gen_cb (common_gen_cb_parm);
       common_gen_cb_parm->genkey_result = NULL;
       common_gen_cb_parm->genkey_result2 = NULL;
-           || algo == PUBKEY_ALGO_ECDH
-           || algo == PUBKEY_ALGO_GOST12_256
-           || algo == PUBKEY_ALGO_GOST12_512 )
+      if (err)
         {
           gcry_sexp_release (s_key);
           gcry_sexp_release (s_key2);
@@ -1964,7 +1952,9 @@ common_gen (const char *keyparms, const char *keyparms2,
     err = ecckey_from_sexp (pk->pkey, s_key, s_key2, algo, pk->version);
   else if (algo == PUBKEY_ALGO_ECDSA
            || algo == PUBKEY_ALGO_EDDSA
-           || algo == PUBKEY_ALGO_ECDH )
+           || algo == PUBKEY_ALGO_ECDH
+           || algo == PUBKEY_ALGO_GOST12_256
+           || algo == PUBKEY_ALGO_GOST12_512);
     err = ecckey_from_sexp (pk->pkey, s_key, NULL, algo, pk->version);
   else
     err = key_from_sexp (pk->pkey, s_key, "public-key", algoelem);
@@ -2139,9 +2129,7 @@ gen_dsa (unsigned int nbits, KBNODE pub_root,
                         keygen_flags, passphrase,
                         cache_nonce_addr, passwd_nonce_addr,
                         common_gen_cb, common_gen_cb_parm);
-              || algo == PUBKEY_ALGO_ECDH
-              || algo == PUBKEY_ALGO_GOST12_256
-              || algo == PUBKEY_ALGO_GOST12_512);
+      xfree (keyparms);
     }
 
   return err;
@@ -2167,7 +2155,9 @@ gen_ecc (int algo, const char *curve, kbnode_t pub_root,
 
   log_assert (algo == PUBKEY_ALGO_ECDSA
               || algo == PUBKEY_ALGO_EDDSA
-              || algo == PUBKEY_ALGO_ECDH);
+              || algo == PUBKEY_ALGO_ECDH
+              || algo == PUBKEY_ALGO_GOST12_256
+              || algo == PUBKEY_ALGO_GOST12_512 )
 
   if (!curve || !*curve)
     return gpg_error (GPG_ERR_UNKNOWN_CURVE);
