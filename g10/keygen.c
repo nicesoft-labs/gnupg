@@ -1572,14 +1572,23 @@ ecckey_from_sexp (gcry_mpi_t *array, gcry_sexp_t sexp,
       list = gcry_sexp_find_token (sexp2, "public-key", 0);
       if (!list)
         {
-  else if (algo == PUBKEY_ALGO_ECDH
-           || algo == PUBKEY_ALGO_GOST12_256
-           || algo == PUBKEY_ALGO_GOST12_512)
-      if (openpgp_oidstr_is_gost (oidstr))
-          err = pk_gost_default_params (oidstr, nbits, &array[2]);
-          if (err)
+  else if (algo == PUBKEY_ALGO_ECDH ||
+         algo == PUBKEY_ALGO_GOST12_256 ||
+         algo == PUBKEY_ALGO_GOST12_512)
+{
+    if (openpgp_oidstr_is_gost(oidstr)) {
+        err = pk_gost_default_params(oidstr, nbits, &array[2]);
+        if (err)
+            goto leave;
+    } else {
+        array[2] = pk_ecdh_default_params(nbits);
+        if (!array[2]) {
+            err = gpg_error_from_syserror();
             goto leave;
         }
+    }
+}
+
       else
         {
           array[2] = pk_ecdh_default_params (nbits);
