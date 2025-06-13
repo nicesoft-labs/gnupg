@@ -190,8 +190,13 @@ gpg_error_t uncompress_ecc_q_in_canon_sexp (const unsigned char *keydata,
                                             size_t *r_newkeydatalen);
 
 int get_pk_algo_from_key (gcry_sexp_t key);
+int get_pk_info_from_key (gcry_sexp_t key, char **r_oid, char **r_curve_oid,
+                          char **r_digest_oid);
 int get_pk_algo_from_canon_sexp (const unsigned char *keydata,
                                  size_t keydatalen);
+int get_pk_info_from_canon_sexp (const unsigned char *keydata,
+                                 size_t keydatalen, char **r_oid,
+                                 char **r_curve_oid, char **r_digest_oid);
 char *pubkey_algo_string (gcry_sexp_t s_pkey, enum gcry_pk_algos *r_algoid);
 const char *pubkey_algo_to_string (int algo);
 const char *hash_algo_to_string (int algo);
