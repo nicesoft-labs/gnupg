@@ -1572,8 +1572,10 @@ ecckey_from_sexp (gcry_mpi_t *array, gcry_sexp_t sexp,
       list = gcry_sexp_find_token (sexp2, "public-key", 0);
       if (!list)
         {
-          err = gpg_error (GPG_ERR_INV_OBJ);
-          goto leave;
+  else if (algo == PUBKEY_ALGO_ECDH
+           || algo == PUBKEY_ALGO_GOST12_256
+           || algo == PUBKEY_ALGO_GOST12_512)
+      if (openpgp_oidstr_is_gost (oidstr))
         }
       l2 = gcry_sexp_cadr (list);
       gcry_sexp_release (list);
@@ -1754,17 +1756,15 @@ do_create_from_keygrip (ctrl_t ctrl, int algo,
       err = gcry_sexp_sscan (&s_key, NULL, public,
                                gcry_sexp_canon_len (public, 0, NULL, NULL));
       xfree (public);
-      if (err)
-        {
-          xfree (hexkeygrip_buffer);
-          return err;
-        }
-      if (hexkeygrip2)
-        {
-          err = agent_readkey (ctrl, 0, hexkeygrip2, &public);
-          if (err)
-            {
-              gcry_sexp_release (s_key);
+  /* For X448, Kyber and GOST we force the use of v5 packets.  */
+  if (curve_is_448 (s_key)
+      || algo == PUBKEY_ALGO_KYBER
+      || algo == PUBKEY_ALGO_GOST12_256
+      || algo == PUBKEY_ALGO_GOST12_512)
+           || algo == PUBKEY_ALGO_EDDSA
+           || algo == PUBKEY_ALGO_ECDH
+           || algo == PUBKEY_ALGO_GOST12_256
+           || algo == PUBKEY_ALGO_GOST12_512)
               xfree (hexkeygrip_buffer);
               return err;
             }
@@ -2131,8 +2131,13 @@ gen_dsa (unsigned int nbits, KBNODE pub_root,
     {
       err = common_gen (keyparms, NULL, PUBKEY_ALGO_DSA, "pqgy",
                         pub_root, timestamp, expireval, is_subkey,
-                        keygen_flags, passphrase,
-                        cache_nonce_addr, passwd_nonce_addr,
+  int is_GOST = 0;
+  if (0 == strncmp (curve, "GOST", 4))
+    is_GOST = 1;
+
+        ("(genkey(ecc(curve %zu:%s)(flags nocomp%s%s)))",
+          " transient-key" : ""),
+         is_GOST ? " gost" : "");
                         common_gen_cb, common_gen_cb_parm);
       xfree (keyparms);
     }
@@ -7280,7 +7285,9 @@ gen_card_key (int keyno, int algo, int is_primary, kbnode_t pub_root,
       xfree (pk);
       return err;
     }
-  err = gcry_sexp_sscan (&s_key, NULL, public,
+           || algo == PUBKEY_ALGO_ECDH
+           || algo == PUBKEY_ALGO_GOST12_256
+           || algo == PUBKEY_ALGO_GOST12_512)
                          gcry_sexp_canon_len (public, 0, NULL, NULL));
   xfree (public);
   if (err)
