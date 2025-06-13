@@ -15,66 +15,18 @@
 #include "../common/gost-util.h"
 #include "pkglue.h"
 #include "main.h"
+#include "gost-kdf.h"
+#include "gost-map.h"
+#include "gost-helper.h"
+
+#ifndef DBG_CRYPTO
+# define DBG_CRYPTO 0
+#endif
 
 /* Version marker used with packed GOST parameter sets.  */
 #define GOST_KDF_PARAMS_VERSION 2
 
-/* -- Parameter descriptors --  */
-typedef enum
-  {
-    DIGEST_PARAMS_UNSPECIFIED = 0,
-    DIGEST_PARAMS_GOSTR3411_94_A = 1
-  } digest_params_t;
-
-typedef enum
-  {
-    CIPHER_PARAMS_GOST28147_A = 1,
-    CIPHER_PARAMS_GOST28147_B = 2,
-    CIPHER_PARAMS_GOST28147_C = 3,
-    CIPHER_PARAMS_GOST28147_D = 4,
-    CIPHER_PARAMS_GOST28147_Z = 5
-  } cipher_params_t;
-
-typedef enum
-  {
-    MAC_PARAMS_UNSPECIFIED = 0,
-    MAC_PARAMS_GOST28147_A = 1,
-    MAC_PARAMS_GOST28147_B = 2,
-    MAC_PARAMS_GOST28147_C = 3,
-    MAC_PARAMS_GOST28147_D = 4,
-    MAC_PARAMS_GOST28147_Z = 5
-  } mac_params_t;
-
-typedef enum { VKO_7836 = 1 } vko_algo_t;
-
-typedef enum { KDF_NULL = 0, GOST_KDF_CPDIVERS = 1 } kdf_algo_t;
-
-typedef enum { KEYWRAP_7836 = 1 } keywrap_algo_t;
-
-typedef struct
-{
-  vko_algo_t vko_algo;
-  struct
-  {
-    unsigned char ukm_len;
-    digest_algo_t vko_digest_algo;
-    digest_params_t vko_digest_params;
-  } vko_7836;
-  kdf_algo_t kdf_algo;
-  struct
-  {
-    cipher_algo_t kdf_cipher_algo;
-    cipher_params_t kdf_cipher_params;
-  } kdf_4357;
-  keywrap_algo_t keywrap_algo;
-  struct
-  {
-    mac_algo_t keywrap_mac_algo;
-    mac_params_t keywrap_mac_params;
-    cipher_algo_t keywrap_cipher_algo;
-    cipher_params_t keywrap_cipher_params;
-  } keywrap_7836;
-} gost_kdf_params_t;
+/* Parameter descriptors moved to gost-kdf.h */
 
 /* Default parameter table for supported curves.  */
 static const struct
@@ -326,7 +278,7 @@ pk_gost_decrypt_with_shared_point (gcry_mpi_t shared, gcry_mpi_t ukm,
 
   if (DBG_CRYPTO)
     {
-      log_printhex ("GOST wrapped value:", data_buf + 1, data_len - 1);
+      log_printhex (data_buf + 1, data_len - 1, "GOST wrapped value:");
       log_printmpi ("GOST UKM:", ukm);
     }
 
