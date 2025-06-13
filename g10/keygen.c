@@ -1480,50 +1480,60 @@ curve_is_448 (gcry_sexp_t sexp)
   list = gcry_sexp_find_token (sexp, "public-key", 0);
   if (!list)
     return 0;  /* Not a public key.  */
+
   l2 = gcry_sexp_cadr (list);
   gcry_sexp_release (list);
   list = l2;
   if (!list)
-    return 0; /* Bad public key.  */
+      err = gpg_error (GPG_ERR_INV_OBJ);
+      goto leave;
+    }
 
-  l2 = gcry_sexp_find_token (list, "curve", 0);
+  err = openpgp_oid_from_str (oidstr, &array[0]);
+  if (err)
+    goto leave;
+
+  err = sexp_extract_param_sos (list, "q", &array[1]);
+  if (err)
+    goto leave;
+
   gcry_sexp_release (list);
-  if (!l2)
-    return 0; /* No curve parameter.  */
-  curve = gcry_sexp_nth_string (l2, 1);
-  gcry_sexp_release (l2);
-  if (!curve)
-    return 0; /* Bad curve parameter.  */
-  result = (!ascii_strcasecmp (curve, "X448")
-            || !ascii_strcasecmp (curve, "Ed448")
-            || !ascii_strcasecmp (curve, "cv448"));
-  xfree (curve);
-  return result;
-}
+  list = NULL;
 
+  if (algo == PUBKEY_ALGO_KYBER)
+      if (!sexp2)
+          err = gpg_error (GPG_ERR_MISSING_VALUE);
+          goto leave;
 
-/* Extract the parameters in OpenPGP format from SEXP and put them
- * into the caller provided ARRAY.  SEXP2 is used to provide the
- * parameters for dual algorithm (e.g. Kyber).  */
-static gpg_error_t
-ecckey_from_sexp (gcry_mpi_t *array, gcry_sexp_t sexp,
-                  gcry_sexp_t sexp2, int algo, int pkversion)
-{
-  gpg_error_t err;
-  gcry_sexp_t list, l2;
-  char *curve = NULL;
-  int i;
-  const char *oidstr;
-  unsigned int nbits;
+          err = gpg_error (GPG_ERR_INV_OBJ);
+          goto leave;
+      l2 = gcry_sexp_cadr (list);
+      gcry_sexp_release (list);
 
-  array[0] = NULL;
-  array[1] = NULL;
-  array[2] = NULL;
-
-  list = gcry_sexp_find_token (sexp, "public-key", 0);
-  if (!list)
-    return gpg_error (GPG_ERR_INV_OBJ);
-  l2 = gcry_sexp_cadr (list);
+          err = gpg_error (GPG_ERR_NO_OBJ);
+          err = gpg_error (GPG_ERR_INV_OBJ);
+  else if (algo == PUBKEY_ALGO_ECDH ||
+           algo == PUBKEY_ALGO_GOST12_256 ||
+           algo == PUBKEY_ALGO_GOST12_512)
+    {
+      if (openpgp_oidstr_is_gost (oidstr))
+        {
+          err = pk_gost_default_params (oidstr, nbits, &array[2]);
+          if (err)
+            goto leave;
+        }
+      else
+        {
+          array[2] = pk_ecdh_default_params (nbits);
+          if (!array[2])
+            {
+              err = gpg_error_from_syserror ();
+              goto leave;
+            }
+        }
+    }
+leave:
+      for (i = 0; i < 3; i++)
   gcry_sexp_release (list);
   list = l2;
   if (!list)
