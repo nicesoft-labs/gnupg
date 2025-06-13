@@ -46,6 +46,8 @@
 #include "../common/host2net.h"
 #include "../common/mbox-util.h"
 
+int openpgp_oidstr_is_gost (const char *oidstr);
+
 
 /* The default algorithms.  If you change them, you should ensure the
  * value is inside the bounds enforced by ask_keysize and gen_xxx.
@@ -1545,29 +1547,29 @@ ecckey_from_sexp (gcry_mpi_t *array, gcry_sexp_t sexp,
     {
       /* That can't happen because we used one of the curves
          gpg_curve_to_oid knows about.  */
-      err = gpg_error (GPG_ERR_INV_OBJ);
-      goto leave;
-    }
-
-  err = openpgp_oid_from_str (oidstr, &array[0]);
-  if (err)
-    goto leave;
-
-  err = sexp_extract_param_sos (list, "q", &array[1]);
-  if (err)
-    goto leave;
-
-  gcry_sexp_release (list);
-  list = NULL;
-
-  if (algo == PUBKEY_ALGO_KYBER)
-    {
-      if (!sexp2)
-        {
-          err = gpg_error (GPG_ERR_MISSING_VALUE);
+          err = gpg_error (GPG_ERR_INV_OBJ);
           goto leave;
+      l2 = gcry_sexp_cadr (list);
+      gcry_sexp_release (list);
+  else if (algo == PUBKEY_ALGO_ECDH ||
+           algo == PUBKEY_ALGO_GOST12_256 ||
+           algo == PUBKEY_ALGO_GOST12_512)
+    {
+      if (openpgp_oidstr_is_gost (oidstr))
+          err = pk_gost_default_params (oidstr, nbits, &array[2]);
+          if (err)
+            goto leave;
         }
-
+      else
+        {
+          array[2] = pk_ecdh_default_params (nbits);
+          if (!array[2])
+            {
+              err = gpg_error_from_syserror ();
+              goto leave;
+            }
+        }
+  
       list = gcry_sexp_find_token (sexp2, "public-key", 0);
       if (!list)
         {
@@ -1755,11 +1757,20 @@ do_create_from_keygrip (ctrl_t ctrl, int algo,
       err = gcry_sexp_sscan (&s_key, NULL, public,
                                gcry_sexp_canon_len (public, 0, NULL, NULL));
       xfree (public);
-      if (err)
-        {
-          xfree (hexkeygrip_buffer);
-          return err;
-        }
+  /* For X448 and Kyber we force the use of v5 packets.  */
+  if (algo == PUBKEY_ALGO_KYBER)
+    {
+      *keygen_flags |= KEYGEN_FLAG_CREATE_V5_KEY;
+    }
+  else if (algo == PUBKEY_ALGO_ECDSA ||
+           algo == PUBKEY_ALGO_EDDSA ||
+           algo == PUBKEY_ALGO_ECDH ||
+           algo == PUBKEY_ALGO_GOST12_256 ||
+           algo == PUBKEY_ALGO_GOST12_512)
+    {
+      if (curve_is_448 (s_key))
+        *keygen_flags |= KEYGEN_FLAG_CREATE_V5_KEY;
+    }
       if (hexkeygrip2)
         {
           err = agent_readkey (ctrl, 0, hexkeygrip2, &public);
@@ -1896,9 +1907,7 @@ common_gen (const char *keyparms, const char *keyparms2,
           gcry_sexp_release (s_key2);
           return gpg_error (GPG_ERR_GENERAL);
         }
-      bin2hex (tmpgrip, KEYGRIP_LEN, hexgrip1);
-      if (!gcry_pk_get_keygrip (s_key2, tmpgrip))
-        {
+      if (err)
           log_error ("error computing keygrip for generated key\n");
           gcry_sexp_release (s_key);
           gcry_sexp_release (s_key2);
@@ -2097,16 +2106,9 @@ gen_dsa (unsigned int nbits, KBNODE pub_root,
     but less than 2048, and 160 for 1024 (DSA1).
   */
 
-  if (nbits > 2047)
-    qbits = 256;
-  else if ( nbits > 1024)
-    qbits = 224;
-  else
-    qbits = 160;
-
-  if (qbits != 160 )
-    log_info (_("WARNING: some OpenPGP programs can't"
-                " handle a DSA key with this digest size\n"));
+                        keygen_flags, passphrase,
+                        cache_nonce_addr, passwd_nonce_addr,
+                        common_gen_cb, common_gen_cb_parm);
 
   snprintf (nbitsstr, sizeof nbitsstr, "%u", nbits);
   snprintf (qbitsstr, sizeof qbitsstr, "%u", qbits);
