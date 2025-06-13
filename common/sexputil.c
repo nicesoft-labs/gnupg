@@ -141,7 +141,7 @@ log_printmpi (const char *text, gcry_mpi_t mpi)
     {
       unsigned int nbits;
       void *buf = gcry_mpi_get_opaque (mpi, &nbits);
-      log_printhex (text, buf, (nbits+7)/8);
+      log_printhex (buf, (nbits+7)/8, text);
     }
   else
     {
