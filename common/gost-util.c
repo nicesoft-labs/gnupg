@@ -28,7 +28,7 @@
 
 /* Reverse the byte order in a buffer */
 static void
-flip_buffer(unsigned char *buffer, size_t length)
+void flip_buffer(unsigned char *buffer, unsigned int length)
 {
     size_t i;
     unsigned char tmp;
