@@ -1710,7 +1710,18 @@ path_access(const char *file,int mode)
 }
 
 
-
+    case PUBKEY_ALGO_GOST12_256:
+    case PUBKEY_ALGO_GOST12_512: return 3;
+    case PUBKEY_ALGO_GOST12_256:
+    case PUBKEY_ALGO_GOST12_512: return 3;
+    case PUBKEY_ALGO_GOST12_256:
+    case PUBKEY_ALGO_GOST12_512: return 2;
+    case PUBKEY_ALGO_GOST12_256:
+    case PUBKEY_ALGO_GOST12_512: return 2;
+            || algo == PUBKEY_ALGO_EDDSA
+            || algo == PUBKEY_ALGO_GOST12_256
+            || algo == PUBKEY_ALGO_GOST12_512)
+
 /* Return the number of public key parameters as used by OpenPGP.  */
 int
 pubkey_get_npkey (pubkey_algo_t algo)
