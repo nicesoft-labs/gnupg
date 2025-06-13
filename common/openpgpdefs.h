@@ -216,6 +216,23 @@ typedef enum
   }
 compress_algo_t;
 
+typedef enum
+  {
+    MAC_ALGO_HMAC_MD5 = 106,
+    MAC_ALGO_HMAC_SHA1 = 105,
+    MAC_ALGO_HMAC_RMD160 = 108,
+    MAC_ALGO_HMAC_SHA256 = 101,
+    MAC_ALGO_HMAC_SHA512 = 103,
+    MAC_ALGO_HMAC_SHA384 = 104,
+    MAC_ALGO_HMAC_SHA224 = 102,
+    MAC_ALGO_PRIVATE10 = 110,
+    MAC_ALGO_HMAC_GOSTR3411_94 = 111,
+    MAC_ALGO_HMAC_GOST3411_12_256 = 112,
+    MAC_ALGO_HMAC_GOST3411_12_512 = 113,
+    MAC_ALGO_GOST28147_IMIT = 114
+  }
+mac_algo_t;
+
 /* Limits to be used for static arrays.  */
 #define OPENPGP_MAX_NPKEY  5  /* Maximum number of public key parameters. */
 #define OPENPGP_MAX_NSKEY  7  /* Maximum number of secret key parameters. */
