@@ -213,8 +213,84 @@ pk_gost_encrypt_with_shared_point (gcry_mpi_t shared, gcry_mpi_t ukm,
                                    gcry_mpi_t data, gcry_mpi_t *pkey,
                                    gcry_mpi_t *r_result)
 {
-  (void)shared; (void)ukm; (void)data; (void)pkey; (void)r_result;
-  return GPG_ERR_NOT_IMPLEMENTED;
+  gost_kdf_params_t *kdf_params = NULL;
+  gcry_mpi_t kek = NULL;
+  gcry_mpi_t encoded_key = NULL;
+  unsigned char *encbuf = NULL;
+  gpg_error_t ret = GPG_ERR_NO_ERROR;
+
+  if (DBG_CRYPTO)
+    {
+      log_printmpi ("GOST unwrapped value:", data);
+      log_printmpi ("GOST UKM:", ukm);
+      log_printmpi ("GOST shared point:", shared);
+    }
+
+  *r_result = NULL;
+
+  ret = pk_gost_get_kdf_params (pkey, &kdf_params);
+  if (ret != GPG_ERR_NO_ERROR)
+    return ret;
+
+  ret = gost_vko_kdf (kdf_params, shared, ukm, &kek);
+  if (ret != GPG_ERR_NO_ERROR)
+    goto exit;
+
+  if (DBG_CRYPTO)
+    log_printmpi ("GOST KEK:", kek);
+
+  switch (kdf_params->keywrap_algo)
+    {
+    case KEYWRAP_7836:
+      ret = gost_keywrap (&encoded_key,
+                          map_cipher_openpgp_to_gcry (kdf_params->keywrap_params.keywrap_7836.keywrap_cipher_algo),
+                          cipher_params_to_sbox (kdf_params->keywrap_params.keywrap_7836.keywrap_cipher_params),
+                          map_mac_openpgp_to_gcry (kdf_params->keywrap_params.keywrap_7836.keywrap_mac_algo),
+                          mac_params_to_sbox (kdf_params->keywrap_params.keywrap_7836.keywrap_mac_params),
+                          data, ukm, kek);
+      break;
+    default:
+      ret = GPG_ERR_UNKNOWN_ALGORITHM;
+    }
+  if (ret != GPG_ERR_NO_ERROR)
+    goto exit;
+
+  if (DBG_CRYPTO)
+    log_printmpi ("GOST wrapped value:", encoded_key);
+
+  unsigned int enc_blen;
+  unsigned char *encoded_key_buf = gcry_mpi_get_opaque (encoded_key, &enc_blen);
+  size_t enclen = (enc_blen+7)/8;
+  if (enclen > 255)
+    {
+      ret = GPG_ERR_TOO_LARGE;
+      goto exit;
+    }
+
+  encbuf = xmalloc (enclen + 1);
+  if (!encbuf)
+    {
+      ret = gpg_error_from_syserror ();
+      goto exit;
+    }
+
+  encbuf[0] = (unsigned char) enclen;
+  memcpy (encbuf + 1, encoded_key_buf, enclen);
+
+  *r_result = gcry_mpi_set_opaque (*r_result, encbuf, (enclen + 1) * 8);
+
+  if (DBG_CRYPTO)
+    log_printmpi ("GOST encrypted value:", *r_result);
+
+ exit:
+  free_gost_kdf_params (kdf_params);
+  gcry_mpi_release (kek);
+  gcry_mpi_release (encoded_key);
+
+  if (!*r_result)
+    xfree (encbuf);
+
+  return ret;
 }
 
 /* Decrypt DATA using shared point SHARED and UKM according to params in PKEY. */
@@ -223,6 +299,107 @@ pk_gost_decrypt_with_shared_point (gcry_mpi_t shared, gcry_mpi_t ukm,
                                    gcry_mpi_t data, gcry_mpi_t *pkey,
                                    gcry_mpi_t *r_result)
 {
-  (void)shared; (void)ukm; (void)data; (void)pkey; (void)r_result;
-  return GPG_ERR_NOT_IMPLEMENTED;
+  gost_kdf_params_t *kdf_params = NULL;
+  gcry_mpi_t kek = NULL;
+  unsigned char *data_buf = NULL;
+  gpg_error_t ret = GPG_ERR_NO_ERROR;
+
+  if (DBG_CRYPTO)
+    log_printmpi ("GOST encrypted value:", data);
+
+  *r_result = NULL;
+
+  unsigned int data_bits;
+  data_buf = gcry_mpi_get_opaque (data, &data_bits);
+  if (!data_buf)
+    {
+      ret = gpg_error_from_syserror ();
+      goto exit;
+    }
+
+  byte data_len = (byte) ((data_bits + 7)/8);
+  if (data_buf[0] != (data_len - 1))
+    {
+      ret = GPG_ERR_BAD_MPI;
+      goto exit;
+    }
+
+  if (DBG_CRYPTO)
+    {
+      log_printhex ("GOST wrapped value:", data_buf + 1, data_len - 1);
+      log_printmpi ("GOST UKM:", ukm);
+    }
+
+  ret = pk_gost_get_kdf_params (pkey, &kdf_params);
+  if (ret != GPG_ERR_NO_ERROR)
+    return ret;
+
+  unsigned int shared_blen = gcry_mpi_get_nbits (shared);
+  if (shared_blen < gcry_mpi_get_nbits (pkey[1]))
+    {
+      if (DBG_CRYPTO)
+        log_debug ("GOST shared point: --\n");
+
+      /* It seems that a KEK is directly passed here, possibly from
+         a hardware token or card. */
+      unsigned char shared_len = (shared_blen+7)/8;
+      unsigned char *kek_buf = xtrymalloc_secure (shared_len);
+      if (!kek_buf)
+        {
+          ret = gpg_error_from_syserror ();
+          goto exit;
+        }
+
+      ret = gcry_mpi_print (GCRYMPI_FMT_USG, kek_buf, shared_len, NULL,
+                            shared);
+      if (ret != GPG_ERR_NO_ERROR)
+        goto exit;
+
+      ret = gost_kdf (kdf_params, ukm, kek_buf, shared_len, &kek);
+      xfree (kek_buf);
+
+      if (!kek)
+        {
+          ret = gpg_error_from_syserror ();
+          goto exit;
+        }
+    }
+  else
+    {
+      /* Normal shared point case. */
+      if (DBG_CRYPTO)
+        log_printmpi ("GOST shared point:", shared);
+
+      ret = gost_vko_kdf (kdf_params, shared, ukm, &kek);
+      if (ret != GPG_ERR_NO_ERROR)
+        goto exit;
+    }
+
+  if (DBG_CRYPTO)
+    log_printmpi ("GOST KEK:", kek);
+
+  switch (kdf_params->keywrap_algo)
+    {
+    case KEYWRAP_7836:
+      ret = gost_keyunwrap (r_result,
+                            map_cipher_openpgp_to_gcry (kdf_params->keywrap_params.keywrap_7836.keywrap_cipher_algo),
+                            cipher_params_to_sbox (kdf_params->keywrap_params.keywrap_7836.keywrap_cipher_params),
+                            map_mac_openpgp_to_gcry (kdf_params->keywrap_params.keywrap_7836.keywrap_mac_algo),
+                            mac_params_to_sbox (kdf_params->keywrap_params.keywrap_7836.keywrap_mac_params),
+                            data_buf + 1, data_len - 1, ukm, kek);
+      break;
+    default:
+      ret = GPG_ERR_UNKNOWN_ALGORITHM;
+    }
+  if (ret != GPG_ERR_NO_ERROR)
+    goto exit;
+
+  if (DBG_CRYPTO)
+    log_printmpi ("GOST unwrapped value:", *r_result);
+
+ exit:
+  free_gost_kdf_params (kdf_params);
+  gcry_mpi_release (kek);
+
+  return ret;
 }

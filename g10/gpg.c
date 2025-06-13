@@ -1138,15 +1138,24 @@ build_list_pk_test_algo (int algo)
      is also available.  */
   if (algo == PUBKEY_ALGO_RSA_E
       || algo == PUBKEY_ALGO_RSA_S)
-    return GPG_ERR_DIGEST_ALGO;
+    return GPG_ERR_PUBKEY_ALGO;
 
-  return openpgp_pk_test_algo (algo);
+  if (algo < 110)
+    return openpgp_pk_test_algo (algo);
+  else
+    return GPG_ERR_PUBKEY_ALGO;
 }
 
 static const char *
 build_list_pk_algo_name (int algo)
 {
-  return openpgp_pk_algo_name (algo);
+  const char *s = openpgp_pk_algo_name (algo);
+
+  if (0 == strcmp (s, "ECDH")
+      && openpgp_is_curve_supported ("GOST2012-256-A", NULL, NULL))
+    s = "ECDH (incl. GOST)";
+
+  return s;
 }
 
 static int
