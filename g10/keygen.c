@@ -1954,8 +1954,9 @@ common_gen (const char *keyparms, const char *keyparms2,
            || algo == PUBKEY_ALGO_EDDSA
            || algo == PUBKEY_ALGO_ECDH
            || algo == PUBKEY_ALGO_GOST12_256
-           || algo == PUBKEY_ALGO_GOST12_512);
+           || algo == PUBKEY_ALGO_GOST12_512); {
     err = ecckey_from_sexp (pk->pkey, s_key, NULL, algo, pk->version);
+}
   else
     err = key_from_sexp (pk->pkey, s_key, "public-key", algoelem);
   if (err)
