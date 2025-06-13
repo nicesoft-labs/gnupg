@@ -1710,17 +1710,7 @@ path_access(const char *file,int mode)
 }
 
 
-    case PUBKEY_ALGO_GOST12_256:
-    case PUBKEY_ALGO_GOST12_512: return 3;
-    case PUBKEY_ALGO_GOST12_256:
-    case PUBKEY_ALGO_GOST12_512: return 3;
-    case PUBKEY_ALGO_GOST12_256:
-    case PUBKEY_ALGO_GOST12_512: return 2;
-    case PUBKEY_ALGO_GOST12_256:
-    case PUBKEY_ALGO_GOST12_512: return 2;
-            || algo == PUBKEY_ALGO_EDDSA
-            || algo == PUBKEY_ALGO_GOST12_256
-            || algo == PUBKEY_ALGO_GOST12_512)
+
 
 /* Return the number of public key parameters as used by OpenPGP.  */
 int
@@ -1737,6 +1727,8 @@ pubkey_get_npkey (pubkey_algo_t algo)
     case PUBKEY_ALGO_ECDSA:     return 2;
     case PUBKEY_ALGO_ELGAMAL:   return 3;
     case PUBKEY_ALGO_EDDSA:     return 2;
+    case PUBKEY_ALGO_GOST12_256:
+    case PUBKEY_ALGO_GOST12_512: return 3;
     case PUBKEY_ALGO_KYBER:     return 3;
     default: return 0;
     }
@@ -1758,6 +1750,8 @@ pubkey_get_nskey (pubkey_algo_t algo)
     case PUBKEY_ALGO_ECDSA:     return 3;
     case PUBKEY_ALGO_ELGAMAL:   return 4;
     case PUBKEY_ALGO_EDDSA:     return 3;
+    case PUBKEY_ALGO_GOST12_256:
+    case PUBKEY_ALGO_GOST12_512: return 3;
     case PUBKEY_ALGO_KYBER:     return 5;
     default: return 0;
     }
@@ -1778,6 +1772,8 @@ pubkey_get_nsig (pubkey_algo_t algo)
     case PUBKEY_ALGO_ECDSA:     return 2;
     case PUBKEY_ALGO_ELGAMAL:   return 2;
     case PUBKEY_ALGO_EDDSA:     return 2;
+    case PUBKEY_ALGO_GOST12_256:
+    case PUBKEY_ALGO_GOST12_512: return 2;
     default: return 0;
     }
 }
@@ -1798,6 +1794,8 @@ pubkey_get_nenc (pubkey_algo_t algo)
     case PUBKEY_ALGO_ECDSA:     return 0;
     case PUBKEY_ALGO_ELGAMAL:   return 2;
     case PUBKEY_ALGO_EDDSA:     return 0;
+    case PUBKEY_ALGO_GOST12_256:
+    case PUBKEY_ALGO_GOST12_512: return 2;
     case PUBKEY_ALGO_KYBER:     return 3;
     default: return 0;
     }
@@ -1833,7 +1831,9 @@ pubkey_nbits( int algo, gcry_mpi_t *key )
                             key[0], key[1] );
     }
   else if ((algo == PUBKEY_ALGO_ECDSA || algo == PUBKEY_ALGO_ECDH
-            || algo == PUBKEY_ALGO_EDDSA)
+            || algo == PUBKEY_ALGO_EDDSA
+            || algo == PUBKEY_ALGO_GOST12_256
+            || algo == PUBKEY_ALGO_GOST12_512)
            && key[0] && key[1])
     {
       char *curve = openpgp_oid_to_str (key[0]);
