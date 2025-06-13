@@ -117,7 +117,13 @@ common_source =  \
               pkglue.c pkglue.h \
               objcache.c objcache.h \
               ecdh.c \
-              gost.c
+              $(g10_common_sources)
+
+g10_common_sources = \
+  gost.c \
+  gost-kdf.c \
+  gost-map.c \
+  gost-helper.c
 
 gpg_sources = server.c          \
 	      $(common_source)	\
