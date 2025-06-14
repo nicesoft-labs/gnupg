@@ -33,6 +33,7 @@
 #include <errno.h>
 
 #include "util.h"
+#include "gost-util.h"
 #include "iobuf.h"
 #include "i18n.h"
 
