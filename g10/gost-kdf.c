@@ -108,7 +108,7 @@ gost_kdf(const gost_kdf_params_t *params,
         return gost_cpdiversify_key(
             out_kek,
             map_gost_cipher_openpgp_to_gcry(params->kdf_4357.kdf_cipher_algo),
-            cipher_params_to_sbox(&params->kdf_4357.kdf_cipher_params),
+            cipher_params_to_sbox(params->kdf_4357.kdf_cipher_params),
             shared_buf, shared_len, ukm);
 
     case GOST_KDF_TREE:
