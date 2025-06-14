@@ -33,7 +33,6 @@
 #include <errno.h>
 
 #include "util.h"
-#include "gost-util.h"
 #include "iobuf.h"
 #include "i18n.h"
 
@@ -121,21 +120,6 @@ gnupg_cipher_algo_name (int algo)
   s = gcry_cipher_algo_name (algo);
   if (!strcmp (s, "AES"))
     s = "AES128";
-  return s;
-}
-
-/* Wrapper around gcry_pk_algo_name.  If GOST curves are supported we
- * advertise that fact by returning "ECC (incl. GOST)" instead of the
- * plain "ECC".  */
-const char *
-gnupg_pk_algo_name (int algo)
-{
-  const char *s;
-
-  s = gcry_pk_algo_name (algo);
-  if (!strcmp (s, "ECC")
-      && openpgp_is_curve_supported ("GOST2012-256-A", NULL, NULL))
-    s = "ECC (incl. GOST)";
   return s;
 }
 
@@ -549,32 +533,32 @@ parse_debug_flag (const char *string, unsigned int *debugvar,
       errno = EINVAL;
       return -1;
     }
-    }
-}
 
-/* Store VAL with its byte order reversed in FLIPPED.  */
-int
-mpi_byte_flip (gcry_mpi_t val, gcry_mpi_t *flipped)
-{
-  int rc;
-  unsigned char *buffer = NULL;
-  size_t len = 0;
-  size_t slen = 0;
-
-  rc = gcry_mpi_aprint (GCRYMPI_FMT_USG, &buffer, &len, val);
-  if (!rc && buffer)
+  if (!strcmp (string, "?") || !strcmp (string, "help"))
     {
-      flip_buffer (buffer, len);
-      rc = gcry_mpi_scan (flipped, GCRYMPI_FMT_USG, buffer, len, &slen);
-      if (!rc && slen != len)
-        rc = 1;
+      log_info ("available debug flags:\n");
+      for (i=0; flags[i].name; i++)
+        log_info (" %5u %s\n", flags[i].flag, flags[i].name);
+      if (flags[i].flag != 77)
+        exit (0);
     }
-
-  if (buffer)
-    gcry_free (buffer);
-  return rc;
-}
-
+  else if (digitp (string))
+    {
+      errno = 0;
+      result = strtoul (string, NULL, 0);
+      if (result == ULONG_MAX && errno == ERANGE)
+        return -1;
+    }
+  else
+    {
+      char **words;
+      words = strtokenize (string, ",");
+      if (!words)
+        return -1;
+      for (i=0; words[i]; i++)
+        {
+          if (*words[i])
+            {
               for (j=0; flags[j].name; j++)
                 if (!strcmp (words[i], flags[j].name))
                   {
