@@ -2668,7 +2668,8 @@ ask_algo (ctrl_t ctrl, int addmode, int *r_subkey_algo, unsigned int *r_usage,
 #endif
     }
   if (opt.expert)
-    {
+  tty_printf (_("  (%d) GOST R 34.10-2012\n"), 15 );
+  /* Reserve 16 for Dilithium primary + Kyber subkey.  */
       if (opt.compliance != CO_DE_VS)
         tty_printf (_("   (%d) DSA (set your own capabilities)%s\n"), 7, "");
 #if GPG_USE_RSA
@@ -2957,6 +2958,12 @@ ask_algo (ctrl_t ctrl, int addmode, int *r_subkey_algo, unsigned int *r_usage,
           for (count=1,kpi=keypairlist; kpi; kpi = kpi->next, count++)
             if (count == selection)
               break;
+      else if ((algo == 15 || !strcmp (answer, "gost12")) && !addmode)
+        {
+          algo = PUBKEY_ALGO_GOST12_256;
+          *r_subkey_algo = 0;
+          break;
+        }
           if (!kpi || !kpi->algo)
             {
               /* Just in case no good key.  */
@@ -3873,7 +3880,9 @@ do_create (int algo, unsigned int nbits, const char *curve, kbnode_t pub_root,
            u32 timestamp, u32 expiredate, int is_subkey,
            int *keygen_flags, const char *passphrase,
            char **cache_nonce_addr, char **passwd_nonce_addr,
-           gpg_error_t (*common_gen_cb)(common_gen_cb_parm_t),
+           || algo == PUBKEY_ALGO_ECDH
+           || algo == PUBKEY_ALGO_GOST12_256
+           || algo == PUBKEY_ALGO_GOST12_512)
            common_gen_cb_parm_t common_gen_cb_parm)
 {
   gpg_error_t err;
@@ -4010,6 +4019,14 @@ parse_key_parameter_part (ctrl_t ctrl,
         algo = PUBKEY_ALGO_ELGAMAL_E;
     }
 
+  else if (!ascii_strcasecmp (string, "gost12"))
+    {
+      curve = openpgp_is_curve_supported ("GOST2012-256-A", &algo, NULL);
+      if (!curve)
+        return gpg_error (GPG_ERR_UNKNOWN_CURVE);
+      algo = PUBKEY_ALGO_GOST12_256;
+      size = 256;
+    }
   if (from_card)
     ; /* We need the flags before we can figure out the key to use.  */
   else if (algo)
