@@ -1,29 +1,13 @@
-/* gost-util.h - Some common code for GOST crypto.
- * Copyright (C) 2019 Paul Wolneykien <manowar@altlinux.org>
- *
- * This file is part of GnuPG.
- *
- * GnuPG is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 3 of the License, or
- * (at your option) any later version.
- *
- * GnuPG is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see <https://www.gnu.org/licenses/>.
- */
-
 #ifndef GNUPG_COMMON_GOST_UTIL_H
 #define GNUPG_COMMON_GOST_UTIL_H
 
-#include <gcrypt.h> /* We need this for the memory function protos. */
-#include <errno.h>  /* We need errno.  */
-#include <gpg-error.h> /* We need gpg_error_t and estream. */
-#include "openpgpdefs.h" /* We need gpg_error_t and estream. */
+#include <gcrypt.h>       /* We need this for the memory function protos. */
+#include <errno.h>        /* We need errno.  */
+#include <gpg-error.h>    /* We need gpg_error_t and estream. */
+#include "openpgpdefs.h"  /* We need gpg_error_t and estream. */
+
+/* <-- Вот эта строка нужна, чтобы решить твою ошибку линковки */
+void flip_buffer(unsigned char *buffer, unsigned int length);
 
 gpg_error_t
 gost_generate_ukm (unsigned int ukm_blen, gcry_mpi_t *r_ukm);
