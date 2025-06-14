@@ -14,24 +14,6 @@ typedef enum
     DIGEST_PARAMS_GOSTR3411_94_A = 1
   } digest_params_t;
 
-typedef enum
-  {
-    CIPHER_PARAMS_GOST28147_A = 1,
-    CIPHER_PARAMS_GOST28147_B = 2,
-    CIPHER_PARAMS_GOST28147_C = 3,
-    CIPHER_PARAMS_GOST28147_D = 4,
-    CIPHER_PARAMS_GOST28147_Z = 5
-  } cipher_params_t;
-
-typedef enum
-  {
-    MAC_PARAMS_UNSPECIFIED = 0,
-    MAC_PARAMS_GOST28147_A = 1,
-    MAC_PARAMS_GOST28147_B = 2,
-    MAC_PARAMS_GOST28147_C = 3,
-    MAC_PARAMS_GOST28147_D = 4,
-    MAC_PARAMS_GOST28147_Z = 5
-  } mac_params_t;
 
 typedef enum { VKO_7836 = 1 } vko_algo_t;
 
