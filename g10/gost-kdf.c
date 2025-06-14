@@ -1,6 +1,5 @@
-/* gost-kdf.c — GOST VKO и KDF по RFC 4357/7836 */
+/* gost-kdf.c — GOST VKO и KDF по RFC 4357/7836 */
 #include <config.h>
-#include "main.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -13,6 +12,9 @@
 
 #include "gost-kdf.h"   /* gost_kdf_params_t, VKO_*, KDF_*, KEYWRAP_* */
 #include "gost-map.h"   /* map_gost_cipher_openpgp_to_gcry, cipher_params_to_sbox */
+
+/* Точка: только эта функция нам нужна из main.h */
+int map_md_openpgp_to_gcry(int algo);
 
 /* Преобразование digest_params_t → OID */
 static const char *
@@ -44,9 +46,9 @@ unpack_gost_kdf_params(const unsigned char *packed,
         xfree(p);
         return GPG_ERR_UNKNOWN_ALGORITHM;
     }
-    p->vko_7836.ukm_len          = packed[pos++];
-    p->vko_7836.vko_digest_algo  = packed[pos++];
-    p->vko_7836.vko_digest_params= packed[pos++];
+    p->vko_7836.ukm_len           = packed[pos++];
+    p->vko_7836.vko_digest_algo   = packed[pos++];
+    p->vko_7836.vko_digest_params = packed[pos++];
 
     /* KDF */
     p->kdf_algo = packed[pos++];
@@ -54,8 +56,8 @@ unpack_gost_kdf_params(const unsigned char *packed,
     case KDF_NULL:
         break;
     case GOST_KDF_CPDIVERS:
-        p->kdf_4357.kdf_cipher_algo  = packed[pos++];
-        p->kdf_4357.kdf_cipher_params= packed[pos++];
+        p->kdf_4357.kdf_cipher_algo   = packed[pos++];
+        p->kdf_4357.kdf_cipher_params = packed[pos++];
         break;
     default:
         xfree(p);
@@ -68,10 +70,10 @@ unpack_gost_kdf_params(const unsigned char *packed,
         xfree(p);
         return GPG_ERR_UNKNOWN_ALGORITHM;
     }
-    p->keywrap_7836.keywrap_mac_algo     = packed[pos++];
-    p->keywrap_7836.keywrap_mac_params   = packed[pos++];
-    p->keywrap_7836.keywrap_cipher_algo  = packed[pos++];
-    p->keywrap_7836.keywrap_cipher_params= packed[pos++];
+    p->keywrap_7836.keywrap_mac_algo    = packed[pos++];
+    p->keywrap_7836.keywrap_mac_params  = packed[pos++];
+    p->keywrap_7836.keywrap_cipher_algo = packed[pos++];
+    p->keywrap_7836.keywrap_cipher_params = packed[pos++];
 
     *r_params = p;
     return 0;
@@ -91,7 +93,7 @@ kdf_tree_notimpl(void)
     return GPG_ERR_UNSUPPORTED_ALGORITHM;
 }
 
-/* Основной KDF: из UKM + shared_buf → shared KEK */
+/* Основной KDF: из UKM + shared_buf → KEK */
 gpg_error_t
 gost_kdf(const gost_kdf_params_t *params,
          gcry_mpi_t ukm,
@@ -109,6 +111,7 @@ gost_kdf(const gost_kdf_params_t *params,
         return gost_cpdiversify_key(
             out_kek,
             map_gost_cipher_openpgp_to_gcry(params->kdf_4357.kdf_cipher_algo),
+            /* передаем значение, а не указатель */
             cipher_params_to_sbox(params->kdf_4357.kdf_cipher_params),
             shared_buf, shared_len, ukm);
 
