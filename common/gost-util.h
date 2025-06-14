@@ -57,4 +57,7 @@ gost_keyunwrap (gcry_mpi_t *result,
                 const unsigned char *wrapped, size_t wrapped_len,
                 gcry_mpi_t ukm, gcry_mpi_t kek);
 
+void flip_buffer (unsigned char *buffer, unsigned int length);
+int mpi_byte_flip (gcry_mpi_t val, gcry_mpi_t *flipped);
+
 #endif /*GNUPG_COMMON_GOST_UTIL_H*/

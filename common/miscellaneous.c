@@ -548,44 +548,6 @@ parse_debug_flag (const char *string, unsigned int *debugvar,
       errno = EINVAL;
       return -1;
     }
-
-  if (!strcmp (string, "?") || !strcmp (string, "help"))
-    {
-      log_info ("available debug flags:\n");
-      for (i=0; flags[i].name; i++)
-        log_info (" %5u %s\n", flags[i].flag, flags[i].name);
-      if (flags[i].flag != 77)
-        exit (0);
-    }
-  else if (digitp (string))
-    {
-      errno = 0;
-      result = strtoul (string, NULL, 0);
-      if (result == ULONG_MAX && errno == ERANGE)
-        return -1;
-    }
-  else
-    {
-      char **words;
-      words = strtokenize (string, ",");
-      if (!words)
-        return -1;
-      for (i=0; words[i]; i++)
-        {
-          if (*words[i])
-            {
-/* Reverse the byte order of BUFFER of length LENGTH.  */
-void
-flip_buffer (unsigned char *buffer, unsigned int length)
-{
-  unsigned int i;
-  unsigned char tmp;
-
-  for (i = 0; i < length/2; i++)
-    {
-      tmp = buffer[i];
-      buffer[i] = buffer[length-1-i];
-      buffer[length-1-i] = tmp;
     }
 }
 

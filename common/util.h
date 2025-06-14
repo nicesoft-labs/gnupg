@@ -383,9 +383,6 @@ struct debug_flags_s
 int parse_debug_flag (const char *string, unsigned int *debugvar,
                       const struct debug_flags_s *flags);
 
-void flip_buffer (unsigned char *buffer, unsigned int length);
-int mpi_byte_flip (gcry_mpi_t val, gcry_mpi_t *flipped);
-
 struct compatibility_flags_s
 {
   unsigned int flag;
