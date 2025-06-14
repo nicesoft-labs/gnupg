@@ -738,6 +738,10 @@ openpgp_pk_test_algo2 (pubkey_algo_t algo, unsigned int use)
     case PUBKEY_ALGO_ECDSA:     break;
 #endif
 
+    /* GOST */
+    case PUBKEY_ALGO_GOST12_256:
+    case PUBKEY_ALGO_GOST12_512: ga = GCRY_PK_ECC;   break;
+
 #ifdef GPG_USE_EDDSA
     case PUBKEY_ALGO_EDDSA:     ga = GCRY_PK_ECC;   break;
 #else
@@ -803,6 +807,13 @@ openpgp_pk_algo_usage ( int algo )
           use = PUBKEY_USAGE_CERT | PUBKEY_USAGE_SIG | PUBKEY_USAGE_AUTH;
           break;
 
+      case PUBKEY_ALGO_GOST12_256:
+      case PUBKEY_ALGO_GOST12_512:
+          use = (PUBKEY_USAGE_CERT | PUBKEY_USAGE_SIG
+                 | PUBKEY_USAGE_ENC | PUBKEY_USAGE_RENC
+                 | PUBKEY_USAGE_AUTH);
+          break;
+
       case PUBKEY_ALGO_KYBER:
           use = PUBKEY_USAGE_ENC | PUBKEY_USAGE_RENC;
           break;
@@ -837,6 +848,8 @@ openpgp_pk_algo_name (pubkey_algo_t algo)
     case PUBKEY_ALGO_ECDSA:     return "ECDSA";
     case PUBKEY_ALGO_EDDSA:     return "EDDSA";
     case PUBKEY_ALGO_KYBER:     return "Kyber";
+    case PUBKEY_ALGO_GOST12_256:
+    case PUBKEY_ALGO_GOST12_512: return "GOST12";
     default: return "?";
     }
 }

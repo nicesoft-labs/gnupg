@@ -1200,6 +1200,9 @@ my_strusage( int level )
 	break;
       case 13: p = VERSION; break;
       case 14: p = GNUPG_DEF_COPYRIGHT_LINE; break;
+      case 15:
+        p = "Copyright (C) \320\236\320\236\320\236 \"\320\235\320\220\320\231\320\241 \320\241\320\236\320\244\320\242 \320\223\320\240\320\243\320\237\320\237\" 5024245440 <niceos@ncsgp.ru>";
+        break;
 
       case 17: p = PRINTABLE_OS_NAME; break;
       case 19: p = _("Please report bugs to <@EMAIL@>.\n"); break;
