@@ -150,6 +150,14 @@ typedef enum
   }
 cipher_algo_t;
 
+/* GOST 28147-89 cipher parameters (S-box choices) */
+typedef enum {
+    CIPHER_PARAMS_GOST28147_A = 1,
+    CIPHER_PARAMS_GOST28147_B = 2,
+    CIPHER_PARAMS_GOST28147_C = 3,
+    CIPHER_PARAMS_GOST28147_D = 4,
+    CIPHER_PARAMS_GOST28147_Z = 5
+} cipher_params_t;
 
 /* Note that we encode the AEAD algo in a 3 bit field at some places.  */
 typedef enum
@@ -232,6 +240,15 @@ typedef enum
     MAC_ALGO_GOST28147_IMIT = 114
   }
 mac_algo_t;
+
+/* GOST 28147-89 MAC parameters */
+typedef enum {
+    MAC_PARAMS_GOST28147_A =1,
+    MAC_PARAMS_GOST28147_B =2,
+    MAC_PARAMS_GOST28147_C =3,
+    MAC_PARAMS_GOST28147_D =4,
+    MAC_PARAMS_GOST28147_Z =5
+} mac_params_t;
 
 /* Limits to be used for static arrays.  */
 #define OPENPGP_MAX_NPKEY  5  /* Maximum number of public key parameters. */
