@@ -1,6 +1,10 @@
 #include <config.h>
 #include <stdlib.h>
 #include <string.h>
+#include <gcrypt.h>
+#include <gpg-error.h>
+
+#include "../common/openpgpdefs.h"
 
 #include "gost-kdf.h"
 #include "gost-map.h"
