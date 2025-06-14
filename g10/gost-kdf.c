@@ -1,5 +1,6 @@
 /* gost-kdf.c — GOST VKO и KDF по RFC 4357/7836 */
 #include <config.h>
+#include "main.h"
 #include <stdlib.h>
 #include <string.h>
 
