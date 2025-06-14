@@ -123,6 +123,21 @@ gnupg_cipher_algo_name (int algo)
   return s;
 }
 
+/* Wrapper around gcry_pk_algo_name.  If GOST curves are supported we
+  * advertise that fact by returning "ECC (incl. GOST)" instead of the
+  * plain "ECC".  */
+ const char *
+ gnupg_pk_algo_name (int algo)
+ {
+   const char *s;
+ 
+   s = gcry_pk_algo_name (algo);
+   if (!strcmp (s, "ECC")
+       && openpgp_is_curve_supported ("GOST2012-256-A", NULL, NULL))
+     s = "ECC (incl. GOST)";
+   return s;
+ }
+
 
 void
 obsolete_option (const char *configname, unsigned int configlineno,
