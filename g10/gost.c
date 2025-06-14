@@ -9,7 +9,6 @@
 #include "../common/gost-util.h"
 #include "../common/openpgpdefs.h"
 
-#include "pkglue.h"
 #include "gost-kdf.h"
 #include "gost-map.h"
 #include "gost-helper.h"
