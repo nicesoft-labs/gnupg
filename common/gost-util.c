@@ -26,19 +26,7 @@
 #include "gost-util.h"
 #include "util.h"
 
-/* Reverse the byte order in a buffer */
-void flip_buffer(unsigned char *buffer, unsigned int length)
-{
-    size_t i;
-    unsigned char tmp;
 
-    for (i = 0; i < length / 2; i++)
-    {
-        tmp = buffer[i];
-        buffer[i] = buffer[length - 1 - i];
-        buffer[length - 1 - i] = tmp;
-    }
-}
 
 /* Generate random user keying material (UKM) of ukm_blen bits */
 gpg_error_t
@@ -314,4 +302,233 @@ exit:
     xfree(result_buf);
     xfree(ukm_buf);
     return err;
+}
+
+/* Compute VKO-2012 key from SHARED using DIGEST_ALGO and optional
+ * DIGEST_PARAMS.  On success store the derived key at KEYOUT and its
+ * length at KEYOUT_LEN.  */
+gpg_error_t
+gost_vko (gcry_mpi_t shared, enum gcry_md_algos digest_algo,
+          const char *digest_params, unsigned char **keyout,
+          size_t *keyout_len)
+{
+  unsigned char *secret = NULL;
+  gcry_md_hd_t md = NULL;
+  unsigned char *_keyout = NULL;
+  gpg_error_t ret = GPG_ERR_NO_ERROR;
+  size_t secret_len;
+
+  switch (digest_algo)
+    {
+    case GCRY_MD_GOSTR3411_94:
+      if (!digest_params || strcmp (digest_params, "1.2.643.2.2.30.1"))
+        ret = GPG_ERR_DIGEST_ALGO;
+      else
+        digest_algo = GCRY_MD_GOSTR3411_CP;
+      break;
+    case GCRY_MD_GOSTR3411_CP:
+      if (digest_params && strcmp (digest_params, "1.2.643.2.2.30.1"))
+        ret = GPG_ERR_DIGEST_ALGO;
+      break;
+    case GCRY_MD_STRIBOG256:
+    case GCRY_MD_STRIBOG512:
+      if (digest_params)
+        ret = GPG_ERR_DIGEST_ALGO;
+      break;
+    default:
+      ret = GPG_ERR_DIGEST_ALGO;
+    }
+
+  if (ret)
+    {
+      log_error ("Wrong digest parameters for VKO 7836\n");
+      return ret;
+    }
+
+  secret_len = (gcry_mpi_get_nbits (shared) + 7) / 8;
+  secret = xtrymalloc_secure (secret_len);
+  if (!secret)
+    return gpg_error_from_syserror ();
+
+  ret = gcry_mpi_print (GCRYMPI_FMT_USG, secret, secret_len, NULL, shared);
+  if (ret)
+    goto leave;
+
+  if (secret_len % 2)
+    {
+      memmove (secret, secret + 1, secret_len - 1);
+      secret_len -= 1;
+    }
+
+  flip_buffer (secret, secret_len/2);
+  flip_buffer (secret + secret_len/2, secret_len/2);
+
+  ret = gcry_md_open (&md, digest_algo, GCRY_MD_FLAG_SECURE);
+  if (ret)
+    goto leave;
+
+  gcry_md_write (md, secret, secret_len);
+
+  {
+    size_t dlen = gcry_md_get_algo_dlen (digest_algo);
+    if (*keyout && (!keyout_len || *keyout_len < dlen))
+      {
+        ret = GPG_ERR_TOO_SHORT;
+        goto leave;
+      }
+
+    _keyout = gcry_md_read (md, digest_algo);
+    if (!_keyout)
+      {
+        ret = gpg_error_from_syserror ();
+        goto leave;
+      }
+
+    if (!*keyout)
+      {
+        *keyout = xtrymalloc_secure (dlen);
+        if (!*keyout)
+          {
+            ret = gpg_error_from_syserror ();
+            goto leave;
+          }
+      }
+
+    memcpy (*keyout, _keyout, dlen);
+    if (keyout_len)
+      *keyout_len = dlen;
+  }
+
+leave:
+  xfree (secret);
+  gcry_md_close (md);
+  if (ret && !*keyout && keyout_len)
+    *keyout_len = 0;
+  return ret;
+}
+
+/* Unwrap a key wrapped by gost_keywrap.  */
+gpg_error_t
+gost_keyunwrap (gcry_mpi_t *result,
+                enum gcry_cipher_algos cipher_algo,
+                const char *cipher_sbox,
+                enum gcry_mac_algos mac_algo,
+                const char *mac_sbox,
+                const unsigned char *wrapped, size_t wrapped_len,
+                gcry_mpi_t ukm, gcry_mpi_t kek)
+{
+  gpg_error_t err = 0;
+  gcry_cipher_hd_t cipher_hd = NULL;
+  gcry_mac_hd_t mac_hd = NULL;
+  unsigned char *ukm_buf = NULL;
+  unsigned char *result_buf = NULL;
+  size_t ukm_len;
+  size_t mac_len = gcry_mac_get_algo_maclen (mac_algo);
+  size_t result_len = wrapped_len - mac_len;
+
+  result_buf = xtrymalloc_secure (result_len);
+  if (!result_buf)
+    {
+      err = gpg_error_from_syserror ();
+      goto leave;
+    }
+
+  ukm_len = (gcry_mpi_get_nbits (ukm) + 7) / 8;
+  ukm_buf = xmalloc (ukm_len);
+  if (!ukm_buf)
+    {
+      err = gpg_error_from_syserror ();
+      goto leave;
+    }
+
+  err = gcry_cipher_open (&cipher_hd, cipher_algo, GCRY_CIPHER_MODE_ECB, 0);
+  if (err)
+    goto leave;
+
+  {
+    unsigned int kek_nbits;
+    unsigned char *kek_buf = gcry_mpi_get_opaque (kek, &kek_nbits);
+    unsigned int kek_len = gcry_cipher_get_algo_keylen (cipher_algo);
+    if (!kek_buf)
+      {
+        err = gpg_error_from_syserror ();
+        goto leave;
+      }
+    if ((kek_nbits + 7)/8 != kek_len)
+      {
+        err = GPG_ERR_INV_KEYLEN;
+        goto leave;
+      }
+    err = gcry_cipher_setkey (cipher_hd, kek_buf, kek_len);
+    if (err)
+      goto leave;
+  }
+
+  err = set_cipher_sbox (cipher_hd, cipher_sbox);
+  if (err)
+    goto leave;
+
+  err = gcry_cipher_decrypt (cipher_hd, result_buf, result_len,
+                             wrapped, wrapped_len - mac_len);
+  if (err)
+    goto leave;
+
+  if (gcry_mpi_get_flag (ukm, GCRYMPI_FLAG_OPAQUE))
+    {
+      unsigned int ukm_blen;
+      unsigned char *_ukm = gcry_mpi_get_opaque (ukm, &ukm_blen);
+      if (_ukm)
+        memcpy (ukm_buf, _ukm, ukm_len);
+    }
+  else
+    {
+      size_t ukm_wrt;
+      err = gcry_mpi_print (GCRYMPI_FMT_USG, ukm_buf, ukm_len,
+                            &ukm_wrt, ukm);
+      if (err)
+        goto leave;
+      if (ukm_wrt < ukm_len)
+        {
+          memmove (ukm_buf + (ukm_len - ukm_wrt), ukm_buf, ukm_wrt);
+          memset (ukm_buf, 0, ukm_len - ukm_wrt);
+        }
+    }
+
+  flip_buffer (ukm_buf, ukm_len);
+
+  err = gcry_mac_open (&mac_hd, mac_algo, 0, NULL);
+  if (err)
+    goto leave;
+
+  err = set_mac_sbox (mac_hd, mac_sbox);
+  if (err)
+    goto leave;
+
+  {
+    unsigned int kek_nbits;
+    unsigned char *kek_buf = gcry_mpi_get_opaque (kek, &kek_nbits);
+    unsigned int kek_len = gcry_cipher_get_algo_keylen (cipher_algo);
+    err = gcry_mac_setkey (mac_hd, kek_buf, kek_len);
+    if (err)
+      goto leave;
+  }
+
+  err = gcry_mac_setiv (mac_hd, ukm_buf, ukm_len);
+  if (err)
+    goto leave;
+  err = gcry_mac_write (mac_hd, result_buf, result_len);
+  if (err)
+    goto leave;
+  err = gcry_mac_verify (mac_hd, wrapped + (wrapped_len - mac_len), mac_len);
+  if (err)
+    goto leave;
+
+  *result = gcry_mpi_set_opaque_copy (*result, result_buf, 8 * result_len);
+
+leave:
+  gcry_cipher_close (cipher_hd);
+  gcry_mac_close (mac_hd);
+  xfree (ukm_buf);
+  xfree (result_buf);
+  return err;
 }
