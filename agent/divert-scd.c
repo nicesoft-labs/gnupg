@@ -28,6 +28,7 @@
 #include <sys/stat.h>
 
 #include "agent.h"
+#include "../common/util.h"
 #include "../common/i18n.h"
 #include "../common/sexp-parse.h"
 
@@ -392,8 +393,11 @@ divert_pkdecrypt (ctrl_t ctrl,
   const unsigned char *s;
   size_t n;
   int depth;
-  const unsigned char *ciphertext;
-  size_t ciphertextlen;
+  const unsigned char *ciphertext = NULL;
+  size_t ciphertextlen = 0;
+  const unsigned char *postciphertext = NULL;
+  size_t postciphertextlen = 0;
+  unsigned char *cipherbuf = NULL;
   char *plaintext;
   size_t plaintextlen;
 
@@ -431,62 +435,75 @@ divert_pkdecrypt (ctrl_t ctrl,
         return gpg_error (GPG_ERR_INV_SEXP);
     }
 
-  if (smatch (&s, n, "rsa"))
+  if (!smatch (&s, n, "rsa")
+      && !smatch (&s, n, "gost")
+      && !smatch (&s, n, "ecdh"))
+    return gpg_error (GPG_ERR_UNSUPPORTED_ALGORITHM);
+
+  while (n && *s != ')')
     {
       if (*s != '(')
-        return gpg_error (GPG_ERR_UNKNOWN_SEXP);
+        return gpg_error (GPG_ERR_INV_SEXP);
       s++;
       n = snext (&s);
       if (!n)
         return gpg_error (GPG_ERR_INV_SEXP);
-      if (!smatch (&s, n, "a"))
-        return gpg_error (GPG_ERR_UNKNOWN_SEXP);
-      n = snext (&s);
-    }
-  else if (smatch (&s, n, "ecdh"))
-    {
-      if (*s != '(')
-        return gpg_error (GPG_ERR_UNKNOWN_SEXP);
-      s++;
-      n = snext (&s);
-      if (!n)
-        return gpg_error (GPG_ERR_INV_SEXP);
+
       if (smatch (&s, n, "s"))
         {
           n = snext (&s);
-          s += n;
-          if (*s++ != ')')
-            return gpg_error (GPG_ERR_INV_SEXP);
-          if (*s++ != '(')
-            return gpg_error (GPG_ERR_UNKNOWN_SEXP);
+          if (!n)
+            break;
+        }
+      else if (smatch (&s, n, "u"))
+        {
           n = snext (&s);
           if (!n)
-            return gpg_error (GPG_ERR_INV_SEXP);
+            break;
+          postciphertext = s;
+          postciphertextlen = n;
         }
-      if (!smatch (&s, n, "e"))
-        return gpg_error (GPG_ERR_UNKNOWN_SEXP);
-      n = snext (&s);
-    }
-  else
-    {
-      if (opt.verbose)
+      else if (smatch (&s, n, "e") ||
+               smatch (&s, n, "a") ||
+               smatch (&s, n, "q"))
         {
-          if (smatch (&s, n, "elg"))
-            log_info ("unknown algorithm is \"elg\"\n");
-          else if (smatch (&s, n, "dsa"))
-            log_info ("unknown algorithm is \"dsa\"\n");
-          else if (smatch (&s, n, "kyber"))
-            log_info ("unknown algorithm is \"kyber\"\n");
-          else
-            log_printhex (s, n, "unknown algorithm is");
+          n = snext (&s);
+          if (!n)
+            break;
+          ciphertext = s;
+          ciphertextlen = n;
         }
-      return gpg_error (GPG_ERR_UNSUPPORTED_ALGORITHM);
+      else
+        {
+          /* Skip the value.  */
+          s += n;
+          n = snext (&s);
+          if (!n)
+            break;
+        }
+      if (!n)
+        return gpg_error (GPG_ERR_INV_SEXP);
+      s += n;
+      if (*s++ != ')')
+        return gpg_error (GPG_ERR_INV_SEXP);
     }
 
-  if (!n)
+  if (!ciphertext)
     return gpg_error (GPG_ERR_UNKNOWN_SEXP);
-  ciphertext = s;
-  ciphertextlen = n;
+
+  if (postciphertext)
+    {
+      cipherbuf = xmalloc (ciphertextlen + postciphertextlen);
+      if (!cipherbuf)
+        {
+          rc = gpg_error_from_syserror ();
+          goto exit;
+        }
+      memcpy (cipherbuf, ciphertext, ciphertextlen);
+      memcpy (cipherbuf + ciphertextlen, postciphertext, postciphertextlen);
+      ciphertext = cipherbuf;
+      ciphertextlen += postciphertextlen;
+    }
 
   rc = agent_card_pkdecrypt (ctrl, hexgrip, getpin_cb, ctrl, NULL,
                              ciphertext, ciphertextlen,
@@ -496,6 +513,8 @@ divert_pkdecrypt (ctrl_t ctrl,
       *r_buf = plaintext;
       *r_len = plaintextlen;
     }
+exit:
+  xfree (cipherbuf);
   return rc;
 }
 

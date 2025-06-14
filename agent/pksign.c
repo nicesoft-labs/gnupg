@@ -27,6 +27,7 @@
 #include <sys/stat.h>
 
 #include "agent.h"
+#include "../common/util.h"
 #include "../common/i18n.h"
 
 
@@ -209,10 +210,15 @@ do_encode_dsa (const byte *md, size_t mdlen, int pkalgo, gcry_sexp_t pkey,
     mdlen = qbits/8;
 
   /* Create the S-expression.  */
-  err = gcry_sexp_build (&hash, NULL,
-                         "(data (flags rfc6979) (hash %s %b))",
-                         rfc6979_hash_algo_string (mdlen),
-                         (int)mdlen, md);
+  if (pkey_is_gost (pkey))
+    err = gcry_sexp_build (&hash, NULL,
+                           "(data (flags gost) (value %b))",
+                           (int)mdlen, md);
+  else
+    err = gcry_sexp_build (&hash, NULL,
+                           "(data (flags rfc6979) (hash %s %b))",
+                           rfc6979_hash_algo_string (mdlen),
+                           (int)mdlen, md);
   if (!err)
     *r_hash = hash;
   return err;
@@ -454,6 +460,8 @@ agent_pksign_do (ctrl_t ctrl, const char *cache_nonce,
           unsigned char *r_buf, *s_buf;
           int r_buflen, s_buflen;
           int i;
+          int is_gost = pkey_is_gost (s_pkey ? s_pkey : s_skey);
+          unsigned char *tmp_buf;
 
           r_buflen = s_buflen = len/2;
 
@@ -463,20 +471,34 @@ agent_pksign_do (ctrl_t ctrl, const char *cache_nonce,
            * zeros.
            */
           r_buf = buf;
-          for (i = 0; i < r_buflen - 1; i++)
-            if (r_buf[i])
-              break;
-          r_buf += i;
-          r_buflen -= i;
+          if (!is_gost)
+            {
+              for (i = 0; i < r_buflen - 1; i++)
+                if (r_buf[i])
+                  break;
+              r_buf += i;
+              r_buflen -= i;
+            }
 
           s_buf = buf + len/2;
-          for (i = 0; i < s_buflen - 1; i++)
-            if (s_buf[i])
-              break;
-          s_buf += i;
-          s_buflen -= i;
+          if (!is_gost)
+            {
+              for (i = 0; i < s_buflen - 1; i++)
+                if (s_buf[i])
+                  break;
+              s_buf += i;
+              s_buflen -= i;
+            }
 
-          err = gcry_sexp_build (&s_sig, NULL, "(sig-val(ecdsa(r%b)(s%b)))",
+          if (is_gost)
+            {
+              tmp_buf = s_buf;
+              s_buf = r_buf;
+              r_buf = tmp_buf;
+          }
+
+          err = gcry_sexp_build (&s_sig, NULL, "(sig-val(%s(r%b)(s%b)))",
+                                 is_gost ? "gost" : "ecdsa",
                                  r_buflen, r_buf,
                                  s_buflen, s_buf);
         }

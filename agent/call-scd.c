@@ -1007,7 +1007,13 @@ card_keyinfo_cb (void *opaque, const char *line)
       if (!n)
         goto skip;
 
-      keyinfo->serialno = xtrymalloc (n+1);
+      line = s;
+      while (*s && !spacep (s))
+        s++;
+
+      keyinfo->usage = xtrymalloc (s - line + 1);
+      memcpy (keyinfo->usage, line, s - line);
+      keyinfo->usage[s - line] = 0;
       if (!keyinfo->serialno)
         goto alloc_error;
 
