@@ -2509,7 +2509,10 @@ parse_signature (IOBUF inp, int pkttype, unsigned long pktlen,
 	{
 	  n = pktlen;
           if (sig->pubkey_algo == PUBKEY_ALGO_ECDSA
-              || sig->pubkey_algo == PUBKEY_ALGO_EDDSA)
+              || sig->pubkey_algo == PUBKEY_ALGO_EDDSA
+              || sig->pubkey_algo == PUBKEY_ALGO_GOST12_256
+              || sig->pubkey_algo == PUBKEY_ALGO_GOST12_512
+              || sig->pubkey_algo == PUBKEY_ALGO_GOST2001)
             sig->data[i] = sos_read (inp, &n, 0);
           else
             sig->data[i] = mpi_read (inp, &n, 0);
@@ -2741,7 +2744,11 @@ parse_key (IOBUF inp, int pkttype, unsigned long pktlen,
           if (    (algorithm == PUBKEY_ALGO_ECDSA && (i == 0))
                || (algorithm == PUBKEY_ALGO_EDDSA && (i == 0))
                || (algorithm == PUBKEY_ALGO_ECDH  && (i == 0 || i == 2))
-               || (algorithm == PUBKEY_ALGO_KYBER && (i == 0)))
+               || (algorithm == PUBKEY_ALGO_KYBER && (i == 0))
+               || ((algorithm == PUBKEY_ALGO_GOST12_256
+                    || algorithm == PUBKEY_ALGO_GOST12_512
+                    || algorithm == PUBKEY_ALGO_GOST2001)
+                   && (i == 0)))
             {
               /* Read the OID (i==0) or the KDF params (i==2).  */
 	      err = read_sized_octet_string (inp, &pktlen, pk->pkey+i);
@@ -2758,7 +2765,10 @@ parse_key (IOBUF inp, int pkttype, unsigned long pktlen,
               if (algorithm == PUBKEY_ALGO_ECDSA
                   || algorithm == PUBKEY_ALGO_EDDSA
                   || algorithm == PUBKEY_ALGO_ECDH
-                  || algorithm == PUBKEY_ALGO_KYBER)
+                  || algorithm == PUBKEY_ALGO_KYBER
+                  || algorithm == PUBKEY_ALGO_GOST12_256
+                  || algorithm == PUBKEY_ALGO_GOST12_512
+                  || algorithm == PUBKEY_ALGO_GOST2001)
                 pk->pkey[i] = sos_read (inp, &n, 0);
               else
                 pk->pkey[i] = mpi_read (inp, &n, 0);
@@ -2775,7 +2785,10 @@ parse_key (IOBUF inp, int pkttype, unsigned long pktlen,
               if ((algorithm == PUBKEY_ALGO_ECDSA
                    || algorithm == PUBKEY_ALGO_EDDSA
                    || algorithm == PUBKEY_ALGO_ECDH
-                   || algorithm == PUBKEY_ALGO_KYBER) && i==0)
+                   || algorithm == PUBKEY_ALGO_KYBER
+                   || algorithm == PUBKEY_ALGO_GOST12_256
+                   || algorithm == PUBKEY_ALGO_GOST12_512
+                   || algorithm == PUBKEY_ALGO_GOST2001) && i==0)
                 {
                   char *curve = openpgp_oid_to_str (pk->pkey[0]);
                   const char *name = openpgp_oid_to_curve (curve, 0);
@@ -3143,7 +3156,10 @@ parse_key (IOBUF inp, int pkttype, unsigned long pktlen,
                   if (algorithm == PUBKEY_ALGO_ECDSA
                       || algorithm == PUBKEY_ALGO_EDDSA
                       || algorithm == PUBKEY_ALGO_ECDH
-                      || algorithm == PUBKEY_ALGO_KYBER)
+                      || algorithm == PUBKEY_ALGO_KYBER
+                      || algorithm == PUBKEY_ALGO_GOST12_256
+                      || algorithm == PUBKEY_ALGO_GOST12_512
+                      || algorithm == PUBKEY_ALGO_GOST2001)
                     pk->pkey[i] = sos_read (inp, &n, 0);
                   else
                     pk->pkey[i] = mpi_read (inp, &n, 0);

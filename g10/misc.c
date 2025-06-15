@@ -70,6 +70,7 @@
 #include "../common/i18n.h"
 #include "../common/zb32.h"
 
+#define GPG_USE_GOST 1
 
 /* FIXME: Libgcrypt 1.9 will support EAX.  Until we name this a
  * requirement we hardwire the enum used for EAX.  */
