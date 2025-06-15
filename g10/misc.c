@@ -955,8 +955,8 @@ openpgp_md_algo_name (int algo)
     case DIGEST_ALGO_SHA512: return "SHA512";
     case DIGEST_ALGO_SHA224: return "SHA224";
 #ifdef GPG_USE_GOST
-    case DIGEST_ALGO_GOSTR3411_12_256: return "GOST3411-12-256";
-    case DIGEST_ALGO_GOSTR3411_12_512: return "GOST3411-12-512";
+    case DIGEST_ALGO_GOSTR3411_12_256: return "GOST3411-2012-256";
+    case DIGEST_ALGO_GOSTR3411_12_512: return "GOST3411-2012-512";
     case DIGEST_ALGO_GOSTR3411_94:     return "GOST3411-94";
 #endif
     }
@@ -1339,6 +1339,17 @@ string_to_digest_algo (const char *string)
   /* FIXME: We should make use of our wrapper function and not assume
      that there is a 1 to 1 mapping between OpenPGP and Libgcrypt.  */
   val = gcry_md_map_name (string);
+  if (!val && string)
+    {
+      if (!ascii_strcasecmp (string, "GOSTR3411-2012-256")
+          || !ascii_strcasecmp (string, "STRIBOG256")
+          || !ascii_strcasecmp (string, "STREEBOG256"))
+        val = DIGEST_ALGO_GOSTR3411_12_256;
+      else if (!ascii_strcasecmp (string, "GOSTR3411-2012-512")
+               || !ascii_strcasecmp (string, "STRIBOG512")
+               || !ascii_strcasecmp (string, "STREEBOG512"))
+        val = DIGEST_ALGO_GOSTR3411_12_512;
+    }
   if (!val && string && (string[0]=='H' || string[0]=='h'))
     {
       char *endptr;
