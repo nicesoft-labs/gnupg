@@ -236,6 +236,10 @@ pk_verify (pubkey_algo_t pkalgo, gcry_mpi_t hash,
 
           if (openpgp_oid_is_ed25519 (pkey[0]))
             fmt = "(public-key(ecc(curve %s)(flags eddsa)(q%m)))";
+          else if (pkalgo == PUBKEY_ALGO_GOST12_256
+                   || pkalgo == PUBKEY_ALGO_GOST12_512
+                   || pkalgo == PUBKEY_ALGO_GOST2001)
+            fmt = "(public-key(ecc(curve %s)(flags gost)(q%m)))";
           else
             fmt = "(public-key(ecc(curve %s)(q%m)))";
 
@@ -1166,16 +1170,26 @@ pk_check_secret_key (pubkey_algo_t pkalgo, gcry_mpi_t *skey)
 			    skey[0], skey[1], skey[2], skey[3], skey[4],
 			    skey[5]);
     }
-  else if (pkalgo == PUBKEY_ALGO_ECDSA || pkalgo == PUBKEY_ALGO_ECDH)
+  else if (pkalgo == PUBKEY_ALGO_ECDSA || pkalgo == PUBKEY_ALGO_ECDH
+           || pkalgo == PUBKEY_ALGO_GOST12_256
+           || pkalgo == PUBKEY_ALGO_GOST12_512
+           || pkalgo == PUBKEY_ALGO_GOST2001)
     {
       char *curve = openpgp_oid_to_str (skey[0]);
       if (!curve)
         rc = gpg_error_from_syserror ();
       else
         {
-          rc = gcry_sexp_build (&s_skey, NULL,
-                                "(private-key(ecc(curve%s)(q%m)(d%m)))",
-                                curve, skey[1], skey[2]);
+          const char *fmt;
+
+          if (pkalgo == PUBKEY_ALGO_GOST12_256
+              || pkalgo == PUBKEY_ALGO_GOST12_512
+              || pkalgo == PUBKEY_ALGO_GOST2001)
+            fmt = "(private-key(ecc(curve%s)(flags gost)(q%m)(d%m)))";
+          else
+            fmt = "(private-key(ecc(curve%s)(q%m)(d%m)))";
+
+          rc = gcry_sexp_build (&s_skey, NULL, fmt, curve, skey[1], skey[2]);
           xfree (curve);
         }
     }
