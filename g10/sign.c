@@ -1007,7 +1007,7 @@ write_signature_packets (ctrl_t ctrl,
 
         if (!err)
           err = do_sign (ctrl, pk, sig, md,
-                         map_md_openpgp_to_gcry (hash_for (pk)),
+                         hash_for (pk),
                          cache_nonce, 0);
       gcry_md_close (md);
       if (!err)
