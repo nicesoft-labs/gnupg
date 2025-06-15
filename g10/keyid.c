@@ -125,6 +125,9 @@ pubkey_string (PKT_public_key *pk, char *buffer, size_t bufsize)
     case PUBKEY_ALGO_ECDH:
     case PUBKEY_ALGO_ECDSA:
     case PUBKEY_ALGO_EDDSA:     prefix = "";    break;
+    case PUBKEY_ALGO_GOST12_256:
+    case PUBKEY_ALGO_GOST12_512:
+    case PUBKEY_ALGO_GOST2001:  prefix = "";    break;
     case PUBKEY_ALGO_KYBER:     prefix = "ky"; dual = 1;  break;
     case PUBKEY_ALGO_DIL3_25519:  prefix = "dil3";        break;
     case PUBKEY_ALGO_DIL5_448:    prefix = "dil5";        break;
