@@ -4256,13 +4256,13 @@ main (int argc, char **argv)
 	else if(opt.def_digest_algo
 		&& !algo_available(PREFTYPE_HASH,opt.def_digest_algo,NULL))
 	  {
-	    badalg = gcry_md_algo_name (opt.def_digest_algo);
+            badalg = openpgp_md_algo_name (opt.def_digest_algo);
 	    badtype = PREFTYPE_HASH;
 	  }
 	else if(opt.cert_digest_algo
 		&& !algo_available(PREFTYPE_HASH,opt.cert_digest_algo,NULL))
 	  {
-	    badalg = gcry_md_algo_name (opt.cert_digest_algo);
+            badalg = openpgp_md_algo_name (opt.cert_digest_algo);
 	    badtype = PREFTYPE_HASH;
 	  }
 	else if(opt.compress_algo!=-1
@@ -4332,8 +4332,8 @@ main (int argc, char **argv)
 				      || cmd == aClearsign,
 				      opt.def_digest_algo))
       log_error (_("digest algorithm '%s' may not be used in %s mode\n"),
-		 gcry_md_algo_name (opt.def_digest_algo),
-		 gnupg_compliance_option_string (opt.compliance));
+                 openpgp_md_algo_name (opt.def_digest_algo),
+                 gnupg_compliance_option_string (opt.compliance));
 
     /* Fail hard.  */
     if (log_get_errorcount (0))
@@ -5711,7 +5711,8 @@ print_hex (gcry_md_hd_t md, int algo, const char *fname)
   if (algo==DIGEST_ALGO_RMD160)
     indent += es_printf("RMD160 = ");
   else if (algo>0)
-    indent += es_printf("%6s = ", gcry_md_algo_name (algo));
+    indent += es_printf("%6s = ",
+                        gcry_md_algo_name (map_md_openpgp_to_gcry (algo)));
   else
     algo = abs(algo);
 

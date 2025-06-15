@@ -2563,7 +2563,7 @@ check_sig_and_print (CTX c, kbnode_t node)
           log_info (_("%s signature, digest algorithm %s%s%s\n"),
                     sig->sig_class==0x00?_("binary"):
                     sig->sig_class==0x01?_("textmode"):_("unknown"),
-                    gcry_md_algo_name (sig->digest_algo),
+                    openpgp_md_algo_name (sig->digest_algo),
                     *pkstrbuf?_(", key algorithm "):"", pkstrbuf);
         }
 

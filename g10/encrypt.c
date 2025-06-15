@@ -740,8 +740,8 @@ setup_symkey (STRING2KEY **symkey_s2k, DEK **symkey_dek)
   if (!gnupg_digest_is_allowed (opt.compliance, 1, s2kdigest))
     {
       log_error (_("digest algorithm '%s' may not be used in %s mode\n"),
-		 gcry_md_algo_name (s2kdigest),
-		 gnupg_compliance_option_string (opt.compliance));
+                 openpgp_md_algo_name (s2kdigest),
+                 gnupg_compliance_option_string (opt.compliance));
       return gpg_error (GPG_ERR_DIGEST_ALGO);
     }
 

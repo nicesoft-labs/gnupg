@@ -414,10 +414,13 @@ show_preferences (PKT_user_id *uid, int indent, int mode, int verbose)
 	    tty_fprintf (fp, ", ");
 	  tty_fprintf (fp, "%s", openpgp_cipher_algo_name (CIPHER_ALGO_3DES));
 	}
-      tty_fprintf (fp, "\n%*s %s", indent, "", _("AEAD: "));
-      for (i = any = 0; prefs[i].type; i++)
+              if (!openpgp_md_test_algo (prefs[i].value)
+                  && prefs[i].value < 100)
+                tty_fprintf (fp, "%s",
+                              openpgp_md_algo_name (prefs[i].value));
 	{
-	  if (prefs[i].type == PREFTYPE_AEAD)
+          tty_fprintf (fp, "%s",
+                       openpgp_md_algo_name (DIGEST_ALGO_SHA1));
 	    {
 	      if (any)
 		tty_fprintf (fp, ", ");

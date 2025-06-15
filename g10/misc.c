@@ -898,6 +898,26 @@ map_md_openpgp_to_gcry (digest_algo_t algo)
 #else
     case DIGEST_ALGO_SHA512: return 0;
 #endif
+#ifdef GPG_USE_GOST
+    case DIGEST_ALGO_GOSTR3411_12_256:
+#ifdef GCRY_MD_STRIBOG256
+      return GCRY_MD_STRIBOG256;
+#else
+      return 0;
+#endif
+    case DIGEST_ALGO_GOSTR3411_12_512:
+#ifdef GCRY_MD_STRIBOG512
+      return GCRY_MD_STRIBOG512;
+#else
+      return 0;
+#endif
+    case DIGEST_ALGO_GOSTR3411_94:
+#ifdef GCRY_MD_GOSTR3411_CP
+      return GCRY_MD_GOSTR3411_CP;
+#else
+      return 0;
+#endif
+#endif /* GPG_USE_GOST */
     default: return 0;
     }
 }
@@ -933,6 +953,11 @@ openpgp_md_algo_name (int algo)
     case DIGEST_ALGO_SHA384: return "SHA384";
     case DIGEST_ALGO_SHA512: return "SHA512";
     case DIGEST_ALGO_SHA224: return "SHA224";
+#ifdef GPG_USE_GOST
+    case DIGEST_ALGO_GOSTR3411_12_256: return "GOST3411-12-256";
+    case DIGEST_ALGO_GOSTR3411_12_512: return "GOST3411-12-512";
+    case DIGEST_ALGO_GOSTR3411_94:     return "GOST3411-94";
+#endif
     }
   return "?";
 }
