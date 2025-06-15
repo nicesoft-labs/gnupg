@@ -194,6 +194,12 @@
 
   can be used to remove the lock file.
 
+  Note: The GOST crypto patches used by some distributions are not
+  compatible with the keyboxd.  If you encounter errors like
+  "key generation failed: Invalid data type" while creating a GOST key,
+  disable the keyboxd by removing the "use-keyboxd" option from
+  @file{~/.gnupg/common.conf}.
+
 ** Socket directory
 
   GnuPG uses Unix domain sockets to connect its components (on Windows
