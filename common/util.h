@@ -234,6 +234,10 @@ int openpgp_oidbuf_is_cv25519 (const void *buf, size_t len);
 int openpgp_oid_is_cv25519 (gcry_mpi_t a);
 int openpgp_oid_is_cv448 (gcry_mpi_t a);
 int openpgp_oid_is_ed448 (gcry_mpi_t a);
+int openpgp_oidstr_is_gost (const char *oidstr);
+int openpgp_oid_is_gost (gcry_mpi_t a);
+int map_key_oid_to_md_openpgp (gcry_mpi_t a);
+pubkey_algo_t map_key_oid_to_pk_openpgp (gcry_mpi_t a);
 enum gcry_kem_algos openpgp_oid_to_kem_algo (const char *oidname);
 const char *openpgp_curve_to_oid (const char *name,
                                   unsigned int *r_nbits, int *r_algo,

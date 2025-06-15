@@ -2782,8 +2782,18 @@ parse_key (IOBUF inp, int pkttype, unsigned long pktlen,
                   es_fprintf (listfp, " %s (%s)", name?name:"", curve);
                   xfree (curve);
                 }
-              es_putc ('\n', listfp);
-            }
+            es_putc ('\n', listfp);
+          }
+      }
+    }
+
+  if (!err && algorithm == PUBKEY_ALGO_ECDH)
+    {
+      pubkey_algo_t galgo = map_key_oid_to_pk_openpgp (pk->pkey[0]);
+      if (galgo)
+        {
+          algorithm = galgo;
+          pk->pubkey_algo = galgo;
         }
     }
   if (list_mode)

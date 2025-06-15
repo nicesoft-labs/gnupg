@@ -81,37 +81,37 @@ static struct {
   { "GOST2001-test",          "1.2.643.2.2.35.0",    256, "GOST2001-test", NULL,
                             PUBKEY_ALGO_GOST2001 },
   { "GOST2001-CryptoPro-A",   "1.2.643.2.2.35.1",    256,
-                            "GOST2001-CryptoPro-A", NULL,
+                            "gost2001", NULL,
                             PUBKEY_ALGO_GOST2001 },
   { "GOST2001-CryptoPro-B",   "1.2.643.2.2.35.2",    256,
-                            "GOST2001-CryptoPro-B", NULL,
+                            "gost2001", NULL,
                             PUBKEY_ALGO_GOST2001 },
   { "GOST2001-CryptoPro-C",   "1.2.643.2.2.35.3",    256,
-                            "GOST2001-CryptoPro-C", NULL,
+                            "gost2001", NULL,
                             PUBKEY_ALGO_GOST2001 },
   { "GOST2001-CryptoPro-XchA", "1.2.643.2.2.36.0",   256,
-                            "GOST2001-CryptoPro-XchA", NULL,
+                            "gost2001", NULL,
                             PUBKEY_ALGO_GOST2001 },
   { "GOST2001-CryptoPro-XchB", "1.2.643.2.2.36.1",   256,
-                            "GOST2001-CryptoPro-XchB", NULL,
+                            "gost2001", NULL,
                             PUBKEY_ALGO_GOST2001 },
   { "GOST2012-256-A",         "1.2.643.7.1.2.1.1.1", 256,
                             "gost12-256", NULL,
                             PUBKEY_ALGO_GOST12_256 },
   { "GOST2012-256-B",         "1.2.643.7.1.2.1.1.2", 256,
-                            "GOST2012-256-B", NULL,
+                            "gost12-256", NULL,
                             PUBKEY_ALGO_GOST12_256 },
   { "GOST2012-256-C",         "1.2.643.7.1.2.1.1.3", 256,
-                            "GOST2012-256-C", NULL,
+                            "gost12-256", NULL,
                             PUBKEY_ALGO_GOST12_256 },
   { "GOST2012-256-D",         "1.2.643.7.1.2.1.1.4", 256,
-                            "GOST2012-256-D", NULL,
+                            "gost12-256", NULL,
                             PUBKEY_ALGO_GOST12_256 },
   { "GOST2012-512-A",         "1.2.643.7.1.2.1.2.1", 512,
                             "gost12-512", NULL,
                             PUBKEY_ALGO_GOST12_512 },
   { "GOST2012-512-B",         "1.2.643.7.1.2.1.2.2", 512,
-                            "GOST2012-512-B", NULL,
+                            "gost12-512", NULL,
                             PUBKEY_ALGO_GOST12_512 },
 
   { NULL, NULL, 0}
@@ -490,6 +490,28 @@ map_key_oid_to_md_openpgp (gcry_mpi_t a)
     result = DIGEST_ALGO_GOSTR3411_12_512;
   else
     result = 0;
+
+  xfree (oidstr);
+  return result;
+}
+
+/* Map a curve OID to the corresponding OpenPGP public key algorithm.
+ * Returns 0 if the OID does not identify a GOST algorithm.  */
+pubkey_algo_t
+map_key_oid_to_pk_openpgp (gcry_mpi_t a)
+{
+  char *oidstr = openpgp_oid_to_str (a);
+  pubkey_algo_t result = 0;
+
+  if (oidstr &&
+      (0 == strncmp (oidstr, "1.2.643.2.2.35.", 15) ||
+       0 == strncmp (oidstr, "1.2.643.2.2.36.", 15) ||
+       !strcmp (oidstr, "1.2.643.2.2.19")))
+    result = PUBKEY_ALGO_GOST2001;
+  else if (oidstr && 0 == strncmp (oidstr, "1.2.643.7.1.2.1.1.", 18))
+    result = PUBKEY_ALGO_GOST12_256;
+  else if (oidstr && 0 == strncmp (oidstr, "1.2.643.7.1.2.1.2.", 18))
+    result = PUBKEY_ALGO_GOST12_512;
 
   xfree (oidstr);
   return result;
