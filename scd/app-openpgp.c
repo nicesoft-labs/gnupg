@@ -1832,11 +1832,7 @@ ecc_read_pubkey (app_t app, ctrl_t ctrl, int meta_update,
   if (ctrl)
     {
       send_key_data (ctrl, "q", qbuf, ecc_q_len);
-  if (algo == PUBKEY_ALGO_GOST12_256
-      || algo == PUBKEY_ALGO_GOST12_512
-      || algo == PUBKEY_ALGO_GOST2001)
-    format = "(public-key(ecc(curve%s)(flags gost)(q%b)))";
-  else if (!(app->app_local->keyattr[keyno].ecc.flags & ECC_FLAG_DJB_TWEAK))
+      send_key_data (ctrl, "curve", oidbuf, oid_len);
     }
 
   algo = app->app_local->keyattr[keyno].ecc.algo;
@@ -1863,7 +1859,11 @@ ecc_read_pubkey (app_t app, ctrl_t ctrl, int meta_update,
       send_fpr_if_not_null (ctrl, "KEY-FPR", -1, fprbuf);
     }
 
-  if (!(app->app_local->keyattr[keyno].ecc.flags & ECC_FLAG_DJB_TWEAK))
+  if (algo == PUBKEY_ALGO_GOST12_256
+      || algo == PUBKEY_ALGO_GOST12_512
+      || algo == PUBKEY_ALGO_GOST2001)
+    format = "(public-key(ecc(curve%s)(flags gost)(q%b)))";
+  else if (!(app->app_local->keyattr[keyno].ecc.flags & ECC_FLAG_DJB_TWEAK))
     format = "(public-key(ecc(curve%s)(q%b)))";
   else if (keyno == 1)
     format = "(public-key(ecc(curve%s)(flags djb-tweak)(q%b)))";
