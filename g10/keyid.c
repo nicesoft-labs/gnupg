@@ -1348,10 +1348,6 @@ keygrip_from_pk (PKT_public_key *pk, unsigned char *array, int get_second)
     case GCRY_PK_ELG_E:
       err = gcry_sexp_build (&s_pkey, NULL,
                              "(public-key(elg(p%m)(g%m)(y%m)))",
-                                   (pk->pubkey_algo == PUBKEY_ALGO_GOST12_256
-                                    || pk->pubkey_algo == PUBKEY_ALGO_GOST12_512
-                                    || pk->pubkey_algo == PUBKEY_ALGO_GOST2001)?
-                                   "(public-key(ecc(curve%s)(flags gost)(q%m)))":
                              pk->pkey[0], pk->pkey[1], pk->pkey[2]);
       break;
 
@@ -1378,6 +1374,10 @@ keygrip_from_pk (PKT_public_key *pk, unsigned char *array, int get_second)
                                    (pk->pubkey_algo == PUBKEY_ALGO_ECDH
                                     && openpgp_oid_is_cv25519 (pk->pkey[0]))?
                                    "(public-key(ecc(curve%s)(flags djb-tweak)(q%m)))":
+		    		   (pk->pubkey_algo == PUBKEY_ALGO_GOST12_256
+                                    || pk->pubkey_algo == PUBKEY_ALGO_GOST12_512
+                                    || pk->pubkey_algo == PUBKEY_ALGO_GOST2001)?
+                                   "(public-key(ecc(curve%s)(flags gost)(q%m)))":
                                    "(public-key(ecc(curve%s)(q%m)))",
                                    curve, pk->pkey[1]);
             xfree (curve);
