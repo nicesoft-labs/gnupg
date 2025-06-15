@@ -740,7 +740,8 @@ openpgp_pk_test_algo2 (pubkey_algo_t algo, unsigned int use)
 
     /* GOST */
     case PUBKEY_ALGO_GOST12_256:
-    case PUBKEY_ALGO_GOST12_512: ga = GCRY_PK_ECC;   break;
+    case PUBKEY_ALGO_GOST12_512:
+    case PUBKEY_ALGO_GOST2001:  ga = GCRY_PK_ECC;   break;
 
 #ifdef GPG_USE_EDDSA
     case PUBKEY_ALGO_EDDSA:     ga = GCRY_PK_ECC;   break;
@@ -809,6 +810,7 @@ openpgp_pk_algo_usage ( int algo )
 
       case PUBKEY_ALGO_GOST12_256:
       case PUBKEY_ALGO_GOST12_512:
+      case PUBKEY_ALGO_GOST2001:
           use = (PUBKEY_USAGE_CERT | PUBKEY_USAGE_SIG
                  | PUBKEY_USAGE_ENC | PUBKEY_USAGE_RENC
                  | PUBKEY_USAGE_AUTH);
@@ -850,6 +852,7 @@ openpgp_pk_algo_name (pubkey_algo_t algo)
     case PUBKEY_ALGO_KYBER:     return "Kyber";
     case PUBKEY_ALGO_GOST12_256:
     case PUBKEY_ALGO_GOST12_512: return "GOST12";
+    case PUBKEY_ALGO_GOST2001:   return "GOST2001";
     default: return "?";
     }
 }
@@ -1741,7 +1744,8 @@ pubkey_get_npkey (pubkey_algo_t algo)
     case PUBKEY_ALGO_ELGAMAL:   return 3;
     case PUBKEY_ALGO_EDDSA:     return 2;
     case PUBKEY_ALGO_GOST12_256:
-    case PUBKEY_ALGO_GOST12_512: return 3;
+    case PUBKEY_ALGO_GOST12_512:
+    case PUBKEY_ALGO_GOST2001:  return 3;
     case PUBKEY_ALGO_KYBER:     return 3;
     default: return 0;
     }
@@ -1764,7 +1768,8 @@ pubkey_get_nskey (pubkey_algo_t algo)
     case PUBKEY_ALGO_ELGAMAL:   return 4;
     case PUBKEY_ALGO_EDDSA:     return 3;
     case PUBKEY_ALGO_GOST12_256:
-    case PUBKEY_ALGO_GOST12_512: return 3;
+    case PUBKEY_ALGO_GOST12_512:
+    case PUBKEY_ALGO_GOST2001:  return 3;
     case PUBKEY_ALGO_KYBER:     return 5;
     default: return 0;
     }
@@ -1786,7 +1791,8 @@ pubkey_get_nsig (pubkey_algo_t algo)
     case PUBKEY_ALGO_ELGAMAL:   return 2;
     case PUBKEY_ALGO_EDDSA:     return 2;
     case PUBKEY_ALGO_GOST12_256:
-    case PUBKEY_ALGO_GOST12_512: return 2;
+    case PUBKEY_ALGO_GOST12_512:
+    case PUBKEY_ALGO_GOST2001:  return 2;
     default: return 0;
     }
 }
@@ -1808,7 +1814,8 @@ pubkey_get_nenc (pubkey_algo_t algo)
     case PUBKEY_ALGO_ELGAMAL:   return 2;
     case PUBKEY_ALGO_EDDSA:     return 0;
     case PUBKEY_ALGO_GOST12_256:
-    case PUBKEY_ALGO_GOST12_512: return 2;
+    case PUBKEY_ALGO_GOST12_512:
+    case PUBKEY_ALGO_GOST2001:  return 2;
     case PUBKEY_ALGO_KYBER:     return 3;
     default: return 0;
     }
