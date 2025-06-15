@@ -44,6 +44,7 @@ enum opt_values
 
     oLogFile = 500,
     oUseKeyboxd,
+    oNoKeyboxd,
     oKeyboxdProgram,
     oNoAutostart,
 
@@ -53,6 +54,7 @@ enum opt_values
 static gpgrt_opt_t opts[] = {
   ARGPARSE_s_s (oLogFile,        "log-file", "@"),
   ARGPARSE_s_n (oUseKeyboxd,     "use-keyboxd", "@"),
+  ARGPARSE_s_n (oNoKeyboxd,      "no-keyboxd", "@"),
   ARGPARSE_s_n (oNoAutostart,    "no-autostart", "@"),
   ARGPARSE_s_s (oKeyboxdProgram, "keyboxd-program", "@"),
 
@@ -104,6 +106,10 @@ parse_comopt (int module_id, int verbose)
 
         case oUseKeyboxd:
           comopt.use_keyboxd = 1;
+          break;
+
+        case oNoKeyboxd:
+          comopt.use_keyboxd = 0;
           break;
 
         case oNoAutostart:
