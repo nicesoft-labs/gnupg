@@ -1301,7 +1301,7 @@ build_list (const char *text, char letter,
   len = 0;
   init_membuf (&mb, 512);
 
-  limit = (letter == 'A')? 4 : 110;
+  limit = (letter == 'A')? 4 : 255;
   for (i=0; i <= limit; i++ )
     {
       if (!chkf (i) && (s = mapf (i)))
@@ -1830,7 +1830,7 @@ print_algo_numbers(int (*checker)(int))
 {
   int i,first=1;
 
-  for(i=0;i<=110;i++)
+  for(i=0;i<=255;i++)
     {
       if(!checker(i))
 	{
@@ -1849,7 +1849,7 @@ print_algo_names(int (*checker)(int),const char *(*mapper)(int))
 {
   int i,first=1;
 
-  for(i=0;i<=110;i++)
+  for(i=0;i<=255;i++)
     {
       if(!checker(i))
 	{

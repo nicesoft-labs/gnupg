@@ -993,8 +993,10 @@ write_signature_packets (ctrl_t ctrl,
       hash_sigversion_to_magic (md, sig, extrahash);
       gcry_md_final (md);
 
-      if (!err)
-        err = do_sign (ctrl, pk, sig, md, hash_for (pk), cache_nonce, 0);
+        if (!err)
+          err = do_sign (ctrl, pk, sig, md,
+                         map_md_openpgp_to_gcry (hash_for (pk)),
+                         cache_nonce, 0);
       gcry_md_close (md);
       if (!err)
         {
