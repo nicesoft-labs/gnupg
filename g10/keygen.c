@@ -2958,7 +2958,13 @@ ask_algo (ctrl_t ctrl, int addmode, int *r_subkey_algo, unsigned int *r_usage,
           for (count=1,kpi=keypairlist; kpi; kpi = kpi->next, count++)
             if (count == selection)
               break;
-          if (!kpi || !kpi->algo)
+        else if ((algo == 15 || !strcmp (answer, "gost12")) && !addmode)
+        else if (!strcmp (answer, "gost12-512") && !addmode)
+        {
+          algo = PUBKEY_ALGO_GOST12_512;
+          *r_subkey_algo = 0;
+          break;
+        }
             {
               /* Just in case no good key.  */
               free_keypair_info (keypairlist);
@@ -4027,6 +4033,14 @@ parse_key_parameter_part (ctrl_t ctrl,
       if (!string[3])
         size = get_keysize_range (algo, NULL, NULL);
       else
+  else if (!ascii_strcasecmp (string, "gost12-512"))
+    {
+      curve = openpgp_is_curve_supported ("GOST2012-512-A", &algo, NULL);
+      if (!curve)
+        return gpg_error (GPG_ERR_UNKNOWN_CURVE);
+      algo = PUBKEY_ALGO_GOST12_512;
+      size = 512;
+    }
         {
           size = strtoul (string+3, &endp, 10);
           if (size < 512 || size > 16384 || *endp)
