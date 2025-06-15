@@ -1515,7 +1515,18 @@ ecckey_from_sexp (gcry_mpi_t *array, gcry_sexp_t sexp,
   const char *oidstr;
   unsigned int nbits;
 
-  array[0] = NULL;
+            {
+              /* Not found in our table - try using the curve string as
+               * an OID literal.  */
+              err = openpgp_oid_from_str (curve, &array[0]);
+              if (err)
+                {
+                  log_error ("ecckey_from_sexp: unknown curve '%s'\n", curve);
+                  err = 0;
+                }
+              else
+                oidstr = curve; /* For default params below.  */
+            }
   array[1] = NULL;
   array[2] = NULL;
 
