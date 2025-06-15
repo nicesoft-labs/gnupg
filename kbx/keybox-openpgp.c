@@ -215,6 +215,7 @@ keygrip_from_keyparm (int algo, struct keyparm_s *kp, unsigned char *grip)
     case PUBKEY_ALGO_ECDH:
     case PUBKEY_ALGO_GOST12_256:
     case PUBKEY_ALGO_GOST12_512:
+    case PUBKEY_ALGO_GOST2001:
       {
         char *curve = openpgp_oidbuf_to_str (kp[0].mpi, kp[0].len);
         if (!curve)
@@ -353,6 +354,7 @@ parse_key (const unsigned char *data, size_t datalen,
     case PUBKEY_ALGO_EDDSA:
     case PUBKEY_ALGO_GOST12_256:
     case PUBKEY_ALGO_GOST12_512:
+    case PUBKEY_ALGO_GOST2001:
       npkey = 2;
       is_ecc = 1;
       break;

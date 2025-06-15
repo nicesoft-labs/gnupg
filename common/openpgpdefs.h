@@ -182,6 +182,7 @@ typedef enum
     PUBKEY_ALGO_ELGAMAL     = 20, /* Elgamal encrypt+sign (legacy).  */
     /*                        21     reserved by OpenPGP.            */
     PUBKEY_ALGO_EDDSA       = 22, /* EdDSA.                          */
+    PUBKEY_ALGO_GOST2001    = 32, /* GOST R 34.10-2001.              */
     PUBKEY_ALGO_GOST12_256  = 33, /* GOST R 34.10-2012, 256 bit. */
     PUBKEY_ALGO_GOST12_512  = 34, /* GOST R 34.10-2012, 512 bit. */
     /*                        29     (was fips203.ipd.2023-08-24 in 1.5.0)   */
