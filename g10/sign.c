@@ -429,7 +429,7 @@ do_sign (ctrl_t ctrl, PKT_public_key *pksk, PKT_signature *sig,
   print_pubkey_algo_note (pksk->pubkey_algo);
 
   if (!mdalgo)
-    mdalgo = gcry_md_get_algo (md);
+    mdalgo = map_md_gcry_to_openpgp (gcry_md_get_algo (md));
 
   if ((signhints & SIGNHINT_KEYSIG) && !(signhints & SIGNHINT_SELFSIG)
       && mdalgo == GCRY_MD_SHA1
@@ -478,7 +478,7 @@ do_sign (ctrl_t ctrl, PKT_public_key *pksk, PKT_signature *sig,
     }
 
   print_digest_algo_note (mdalgo);
-  dp = gcry_md_read  (md, mdalgo);
+  dp = gcry_md_read (md, map_md_openpgp_to_gcry (mdalgo));
   sig->digest_algo = mdalgo;
   sig->digest_start[0] = dp[0];
   sig->digest_start[1] = dp[1];
@@ -498,7 +498,9 @@ do_sign (ctrl_t ctrl, PKT_public_key *pksk, PKT_signature *sig,
       /* FIXME: Eventually support dual keys.  */
       err = agent_pksign (NULL/*ctrl*/, cache_nonce, hexgrip, desc,
                           pksk->keyid, pksk->main_keyid, pksk->pubkey_algo,
-                          dp, gcry_md_get_algo_dlen (mdalgo), mdalgo,
+                          dp,
+                          gcry_md_get_algo_dlen (map_md_openpgp_to_gcry (mdalgo)),
+                          map_md_openpgp_to_gcry (mdalgo),
                           &s_sigval);
       xfree (desc);
 

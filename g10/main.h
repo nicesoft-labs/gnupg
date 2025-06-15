@@ -141,6 +141,7 @@ int openpgp_pk_algo_usage ( int algo );
 const char *openpgp_pk_algo_name (pubkey_algo_t algo);
 
 enum gcry_md_algos map_md_openpgp_to_gcry (digest_algo_t algo);
+digest_algo_t map_md_gcry_to_openpgp (enum gcry_md_algos algo);
 int openpgp_md_test_algo (digest_algo_t algo);
 const char *openpgp_md_algo_name (int algo);
 
