@@ -1491,46 +1491,52 @@ curve_is_448 (gcry_sexp_t sexp)
     return 0; /* No curve parameter.  */
   curve = gcry_sexp_nth_string (l2, 1);
   gcry_sexp_release (l2);
-  if (!curve)
-    return 0; /* Bad curve parameter.  */
-  result = (!ascii_strcasecmp (curve, "X448")
-            || !ascii_strcasecmp (curve, "Ed448")
-            || !ascii_strcasecmp (curve, "cv448"));
-  xfree (curve);
-  return result;
-}
+  array[2] = NULL;
 
-
-/* Extract the parameters in OpenPGP format from SEXP and put them
- * into the caller provided ARRAY.  SEXP2 is used to provide the
- * parameters for dual algorithm (e.g. Kyber).  */
-static gpg_error_t
-ecckey_from_sexp (gcry_mpi_t *array, gcry_sexp_t sexp,
-                  gcry_sexp_t sexp2, int algo, int pkversion)
-{
-  gpg_error_t err;
-  gcry_sexp_t list, l2;
-  char *curve = NULL;
-  int i;
-  const char *oidstr;
-  unsigned int nbits;
-
-  array[0] = NULL;
-  array[1] = NULL;
-    oidstr = curve; /* Assume CURVE is given as an OID.  */
-  if (err && oidstr != curve)
-    {
-      /* Second try: CURVE may already be an OID.  */
-      err = openpgp_oid_from_str (curve, &array[0]);
-    }
-  gcry_sexp_release (list);
-  list = l2;
+  list = gcry_sexp_find_token (sexp, "public-key", 0);
   if (!list)
-    return gpg_error (GPG_ERR_NO_OBJ);
-
-  l2 = gcry_sexp_find_token (list, "curve", 0);
-  if (!l2)
+    return gpg_error (GPG_ERR_INV_OBJ);
+  l2 = gcry_sexp_cadr (list);
+  oidstr = NULL;
+  nbits = 0;
+  if (l2)
+      curve = gcry_sexp_nth_string (l2, 1);
+      gcry_sexp_release (l2);
+      if (curve)
+        {
+          oidstr = openpgp_curve_to_oid (curve, &nbits, NULL, pkversion > 4);
+          if (!oidstr)
+            log_error ("ecckey_from_sexp: unknown curve '%s'\n", curve);
+          else
+            {
+              err = openpgp_oid_from_str (oidstr, &array[0]);
+              if (err)
+                {
+                  log_error ("ecckey_from_sexp: failed to convert OID: %s\n",
+                             gpg_strerror (err));
+                  err = 0;
+                }
+            }
+        }
+      else
+        log_error ("ecckey_from_sexp: missing curve value\n");
+      xfree (curve);
+      curve = NULL;
     {
+      if (oidstr)
+          if (openpgp_oidstr_is_gost (oidstr))
+              err = pk_gost_default_params (oidstr, nbits, &array[2]);
+              if (err)
+                goto leave;
+            }
+          else
+            {
+              array[2] = pk_ecdh_default_params (nbits);
+              if (!array[2])
+                {
+                  err = gpg_error_from_syserror ();
+                  goto leave;
+                }
       err = gpg_error (GPG_ERR_NO_OBJ);
       goto leave;
     }
