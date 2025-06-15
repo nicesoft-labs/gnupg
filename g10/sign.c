@@ -478,6 +478,7 @@ do_sign (ctrl_t ctrl, PKT_public_key *pksk, PKT_signature *sig,
     }
 
   print_digest_algo_note (mdalgo);
+  log_info("DEBUG mdalgo = %d, mapped = %d\n", mdalgo, map_md_openpgp_to_gcry(mdalgo));
   dp = gcry_md_read (md, map_md_openpgp_to_gcry (mdalgo));
   sig->digest_algo = mdalgo;
   sig->digest_start[0] = dp[0];
