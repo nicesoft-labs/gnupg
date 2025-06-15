@@ -229,6 +229,10 @@ keygrip_from_keyparm (int algo, struct keyparm_s *kp, unsigned char *grip)
                (algo == PUBKEY_ALGO_ECDH
                 && openpgp_oidbuf_is_cv25519 (kp[0].mpi, kp[0].len))?
                "(public-key(ecc(curve%s)(flags djb-tweak)(q%b)))":
+               (algo == PUBKEY_ALGO_GOST12_256
+                || algo == PUBKEY_ALGO_GOST12_512
+                || algo == PUBKEY_ALGO_GOST2001)?
+               "(public-key(ecc(curve%s)(flags gost)(q%b)))":
                "(public-key(ecc(curve%s)(q%b)))",
                curve, kp[1].len, kp[1].mpi);
             xfree (curve);

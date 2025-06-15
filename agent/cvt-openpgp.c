@@ -90,6 +90,8 @@ get_keygrip (int pubkey_algo, const char *curve, gcry_mpi_t *pkey,
             format = "(public-key(ecc(curve %s)(flags eddsa)(q%m)))";
           else if (!strcmp (curve, "Curve25519"))
             format = "(public-key(ecc(curve %s)(flags djb-tweak)(q%m)))";
+          else if (!strncmp (curve, "GOST", 4))
+            format = "(public-key(ecc(curve %s)(flags gost)(q%m)))";
           else
             format = "(public-key(ecc(curve %s)(q%m)))";
 
@@ -160,6 +162,8 @@ convert_secret_key (gcry_sexp_t *r_key, int pubkey_algo, gcry_mpi_t *skey,
             format = "(private-key(ecc(curve %s)(flags eddsa)(q%m)(d%m)))";
           else if (!strcmp (curve, "Curve25519"))
             format = "(private-key(ecc(curve %s)(flags djb-tweak)(q%m)(d%m)))";
+          else if (!strncmp (curve, "GOST", 4))
+            format = "(private-key(ecc(curve %s)(flags gost)(q%m)(d%m)))";
           else
             format = "(private-key(ecc(curve %s)(q%m)(d%m)))";
 
@@ -233,6 +237,9 @@ convert_transfer_key (gcry_sexp_t *r_key, int pubkey_algo, gcry_mpi_t *skey,
               "(protected openpgp-native%S)))";
           else if (!strcmp (curve, "Curve25519"))
             format = "(protected-private-key(ecc(curve %s)(flags djb-tweak)(q%m)"
+              "(protected openpgp-native%S)))";
+          else if (!strncmp (curve, "GOST", 4))
+            format = "(protected-private-key(ecc(curve %s)(flags gost)(q%m)"
               "(protected openpgp-native%S)))";
           else
             format = "(protected-private-key(ecc(curve %s)(q%m)"
