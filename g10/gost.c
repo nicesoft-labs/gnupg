@@ -116,7 +116,7 @@ gpg_error_t pk_gost_default_params(const char *oidstr,
         return err;
 
     buf[0] = len + 1;
-    *r_params = gcry_mpi_set_opaque(*r_params, buf, (len + 2) * 8);
+    *r_params = gcry_mpi_set_opaque_copy (*r_params, buf, (len + 2) * 8);
     return *r_params ? GPG_ERR_NO_ERROR : gpg_error_from_syserror();
 }
 
