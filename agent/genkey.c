@@ -601,6 +601,84 @@ agent_genkey (ctrl_t ctrl, unsigned int flags,
       xfree (passphrase_buffer);
       return gpg_error (GPG_ERR_INV_DATA);
     }
+
+  /* libgcrypt prior to 1.10 does not include the (q ...) field for
+     GOST keys.  Fix this up by computing Q from the secret key.  */
+  {
+    gcry_sexp_t ecc, ecc_priv, flags = NULL, newpub = NULL;
+    gcry_mpi_t qmpi = NULL, dmpi = NULL;
+    char *curve = NULL;
+    gcry_ctx_t ctx;
+
+    ecc = gcry_sexp_find_token (s_public, "ecc", 0);
+    if (ecc && !gcry_sexp_find_token (ecc, "q", 0))
+      {
+        flags = gcry_sexp_find_token (ecc, "flags", 0);
+        ecc_priv = gcry_sexp_find_token (s_private, "ecc", 0);
+        if (ecc_priv)
+          {
+            gcry_sexp_t tmp;
+
+            tmp = gcry_sexp_find_token (ecc_priv, "q", 0);
+            if (tmp)
+              {
+                qmpi = gcry_sexp_nth_mpi (tmp, 1, GCRYMPI_FMT_USG);
+                gcry_sexp_release (tmp);
+              }
+            tmp = gcry_sexp_find_token (ecc_priv, "d", 0);
+            if (tmp)
+              {
+                dmpi = gcry_sexp_nth_mpi (tmp, 1, GCRYMPI_FMT_USG);
+                gcry_sexp_release (tmp);
+              }
+            gcry_sexp_release (ecc_priv);
+          }
+
+        if (!curve)
+          {
+            gcry_sexp_t tmp = gcry_sexp_find_token (ecc, "curve", 0);
+            if (tmp)
+              {
+                curve = gcry_sexp_nth_string (tmp, 1);
+                gcry_sexp_release (tmp);
+              }
+          }
+
+        if (!qmpi && curve && dmpi &&
+            !gcry_mpi_ec_new (&ctx, NULL, curve))
+          {
+            if (!gcry_mpi_ec_set_mpi ("d", dmpi, ctx))
+              qmpi = gcry_mpi_ec_get_mpi ("q", ctx, 1);
+            gcry_ctx_release (ctx);
+          }
+
+        if (qmpi && curve)
+          {
+            if (flags)
+              gcry_sexp_build (&newpub, NULL,
+                               "(public-key(ecc(curve %s)%S(q%m)))",
+                               curve, flags, qmpi);
+            else
+              gcry_sexp_build (&newpub, NULL,
+                               "(public-key(ecc(curve %s)(q%m)))",
+                               curve, qmpi);
+          }
+
+        if (newpub)
+          {
+            gcry_sexp_release (s_public);
+            s_public = newpub;
+          }
+
+        xfree (curve);
+        gcry_mpi_release (qmpi);
+        gcry_mpi_release (dmpi);
+        if (flags)
+          gcry_sexp_release (flags);
+      }
+    if (ecc)
+      gcry_sexp_release (ecc);
+  }
   gcry_sexp_release (s_key); s_key = NULL;
 
   /* store the secret key */
