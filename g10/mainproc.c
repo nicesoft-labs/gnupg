@@ -994,7 +994,8 @@ proc_plaintext( CTX c, PACKET *pkt )
             {
               if (!opt.skip_verify)
                 gcry_md_enable (c->mfx.md,
-                                n->pkt->pkt.onepass_sig->digest_algo);
+                                map_md_openpgp_to_gcry
+                                (n->pkt->pkt.onepass_sig->digest_algo));
 
               any = 1;
             }
@@ -1014,7 +1015,8 @@ proc_plaintext( CTX c, PACKET *pkt )
           clearsig = (*data == 0x01);
           for (data++, datalen--; datalen; datalen--, data++)
             if (!opt.skip_verify)
-              gcry_md_enable (c->mfx.md, *data);
+              gcry_md_enable (c->mfx.md,
+                              map_md_openpgp_to_gcry (*data));
           any = 1;
           break;  /* Stop here as one-pass signature packets are not
                      expected.  */
@@ -1023,7 +1025,9 @@ proc_plaintext( CTX c, PACKET *pkt )
         {
           /* The SIG+LITERAL case that PGP used to use.  */
           if (!opt.skip_verify)
-            gcry_md_enable (c->mfx.md, n->pkt->pkt.signature->digest_algo);
+            gcry_md_enable (c->mfx.md,
+                            map_md_openpgp_to_gcry
+                            (n->pkt->pkt.signature->digest_algo));
           any = 1;
         }
     }
@@ -1295,7 +1299,9 @@ do_check_sig (CTX c, kbnode_t node, const void *extrahash, size_t extrahashlen,
 
   if (md_good)
     {
-      unsigned char *buffer = gcry_md_read (md_good, sig->digest_algo);
+      unsigned char *buffer = gcry_md_read (md_good,
+                                            map_md_openpgp_to_gcry
+                                            (sig->digest_algo));
       sig->digest_len = gcry_md_get_algo_dlen (map_md_openpgp_to_gcry (algo));
       memcpy (sig->digest, buffer, sig->digest_len);
     }
@@ -2708,7 +2714,9 @@ proc_tree (CTX c, kbnode_t node)
           /* Fixme: why looking for the signature packet and not the
              one-pass packet?  */
           for (n1 = node; (n1 = find_next_kbnode (n1, PKT_SIGNATURE));)
-            gcry_md_enable (c->mfx.md, n1->pkt->pkt.signature->digest_algo);
+            gcry_md_enable (c->mfx.md,
+                            map_md_openpgp_to_gcry
+                            (n1->pkt->pkt.signature->digest_algo));
 
           if (n1 && n1->pkt->pkt.onepass_sig->sig_class == 0x01)
             use_textmode = 1;
@@ -2814,7 +2822,8 @@ proc_tree (CTX c, kbnode_t node)
         {
           /* Detached signature */
           free_md_filter_context (&c->mfx);
-          rc = gcry_md_open (&c->mfx.md, sig->digest_algo, 0);
+          rc = gcry_md_open (&c->mfx.md,
+                            map_md_openpgp_to_gcry (sig->digest_algo), 0);
           if (rc)
             goto detached_hash_err;
 
@@ -2839,7 +2848,8 @@ proc_tree (CTX c, kbnode_t node)
                * signature has been created in textmode.  Note that we
                * do not implement this for multiple signatures with
                * different hash algorithms. */
-              rc = gcry_md_open (&c->mfx.md2, sig->digest_algo, 0);
+              rc = gcry_md_open (&c->mfx.md2,
+                                map_md_openpgp_to_gcry (sig->digest_algo), 0);
               if (rc)
                 goto detached_hash_err;
 	    }

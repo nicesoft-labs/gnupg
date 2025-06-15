@@ -411,8 +411,9 @@ decrypt_data (ctrl_t ctrl, void *procctx, PKT_encrypted *ed, DEK *dek,
 
       if ( ed->mdc_method )
         {
-          if (gcry_md_open (&dfx->mdc_hash, ed->mdc_method, 0 ))
-            BUG ();
+          if (gcry_md_open (&dfx->mdc_hash,
+                            map_md_openpgp_to_gcry (ed->mdc_method), 0 ))
+            BUG (); 
           if ( DBG_HASHING )
             gcry_md_debug (dfx->mdc_hash, "checkmdc");
         }
@@ -555,7 +556,8 @@ decrypt_data (ctrl_t ctrl, void *procctx, PKT_encrypted *ed, DEK *dek,
          packet parser.  Fortunatley the OpenPGP spec requires a
          strict format for the MDC packet so that we know that 22
          bytes are appended.  */
-      int datalen = gcry_md_get_algo_dlen (ed->mdc_method);
+      int datalen = gcry_md_get_algo_dlen (map_md_openpgp_to_gcry
+                                            (ed->mdc_method));
 
       log_assert (dfx->cipher_hd);
       log_assert (dfx->mdc_hash);

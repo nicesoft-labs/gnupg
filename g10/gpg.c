@@ -5718,8 +5718,8 @@ print_hex (gcry_md_hd_t md, int algo, const char *fname)
 
   count = indent;
 
-  p = gcry_md_read (md, algo);
-  n = gcry_md_get_algo_dlen (algo);
+  p = gcry_md_read (md, map_md_openpgp_to_gcry (algo));
+  n = gcry_md_get_algo_dlen (map_md_openpgp_to_gcry (algo));
 
   count += es_printf ("%02X",*p++);
 
@@ -5792,8 +5792,8 @@ print_hashline( gcry_md_hd_t md, int algo, const char *fname )
     }
   es_putc (':', es_stdout);
   es_printf ("%d:", algo);
-  p = gcry_md_read (md, algo);
-  n = gcry_md_get_algo_dlen (algo);
+  p = gcry_md_read (md, map_md_openpgp_to_gcry (algo));
+  n = gcry_md_get_algo_dlen (map_md_openpgp_to_gcry (algo));
   for(i=0; i < n ; i++, p++ )
     es_printf ("%02X", *p);
   es_fputs (":\n", es_stdout);

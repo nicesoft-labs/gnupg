@@ -1438,7 +1438,7 @@ algo_available( preftype_t preftype, int algo, const struct pref_hint *hint)
     {
       if (hint && hint->digest_length)
 	{
-          unsigned int n = gcry_md_get_algo_dlen (algo);
+          unsigned int n = gcry_md_get_algo_dlen (map_md_openpgp_to_gcry (algo));
 
           if (hint->exact)
             {

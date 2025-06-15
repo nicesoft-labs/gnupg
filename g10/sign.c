@@ -708,15 +708,17 @@ hash_for (PKT_public_key *pk)
 
 	  if (qbytes != 20 || opt.flags.dsa2)
 	    {
-	      for (prefs=opt.personal_digest_prefs; prefs->type; prefs++)
-		if (gcry_md_get_algo_dlen (prefs->value) >= qbytes)
-		  return prefs->value;
+              for (prefs=opt.personal_digest_prefs; prefs->type; prefs++)
+                if (gcry_md_get_algo_dlen (map_md_openpgp_to_gcry (prefs->value))
+                    >= qbytes)
+                  return prefs->value;
 	    }
 	  else
 	    {
-	      for (prefs=opt.personal_digest_prefs; prefs->type; prefs++)
-		if (gcry_md_get_algo_dlen (prefs->value) == qbytes)
-		  return prefs->value;
+              for (prefs=opt.personal_digest_prefs; prefs->type; prefs++)
+                if (gcry_md_get_algo_dlen (map_md_openpgp_to_gcry (prefs->value))
+                    == qbytes)
+                  return prefs->value;
 	    }
 	}
 
