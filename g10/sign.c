@@ -515,7 +515,10 @@ do_sign (ctrl_t ctrl, PKT_public_key *pksk, PKT_signature *sig,
             err = sexp_extract_param_sos_nlz (s_sigval, "s", &sig->data[1]);
         }
       else if (pksk->pubkey_algo == PUBKEY_ALGO_ECDSA
-               || pksk->pubkey_algo == PUBKEY_ALGO_EDDSA)
+               || pksk->pubkey_algo == PUBKEY_ALGO_EDDSA
+               || pksk->pubkey_algo == PUBKEY_ALGO_GOST12_256
+               || pksk->pubkey_algo == PUBKEY_ALGO_GOST12_512
+               || pksk->pubkey_algo == PUBKEY_ALGO_GOST2001)
         {
           err = sexp_extract_param_sos (s_sigval, "r", &sig->data[0]);
           if (!err)
@@ -672,11 +675,17 @@ hash_for (PKT_public_key *pk)
           return DIGEST_ALGO_SHA256;
     }
   else if (pk->pubkey_algo == PUBKEY_ALGO_DSA
-           || pk->pubkey_algo == PUBKEY_ALGO_ECDSA)
+           || pk->pubkey_algo == PUBKEY_ALGO_ECDSA
+           || pk->pubkey_algo == PUBKEY_ALGO_GOST12_256
+           || pk->pubkey_algo == PUBKEY_ALGO_GOST12_512
+           || pk->pubkey_algo == PUBKEY_ALGO_GOST2001)
     {
       unsigned int qbytes = gcry_mpi_get_nbits (pk->pkey[1]);
 
-      if (pk->pubkey_algo == PUBKEY_ALGO_ECDSA)
+      if (pk->pubkey_algo == PUBKEY_ALGO_ECDSA
+          || pk->pubkey_algo == PUBKEY_ALGO_GOST12_256
+          || pk->pubkey_algo == PUBKEY_ALGO_GOST12_512
+          || pk->pubkey_algo == PUBKEY_ALGO_GOST2001)
         qbytes = ecdsa_qbits_from_Q (qbytes);
       qbytes = qbytes/8;
 
@@ -1196,11 +1205,17 @@ sign_file (ctrl_t ctrl, strlist_t filenames, int detached, strlist_t locusr,
           for (sk_rover = sk_list; sk_rover; sk_rover = sk_rover->next )
             {
               if (sk_rover->pk->pubkey_algo == PUBKEY_ALGO_DSA
-                  || sk_rover->pk->pubkey_algo == PUBKEY_ALGO_ECDSA)
+                  || sk_rover->pk->pubkey_algo == PUBKEY_ALGO_ECDSA
+                  || sk_rover->pk->pubkey_algo == PUBKEY_ALGO_GOST12_256
+                  || sk_rover->pk->pubkey_algo == PUBKEY_ALGO_GOST12_512
+                  || sk_rover->pk->pubkey_algo == PUBKEY_ALGO_GOST2001)
                 {
                   int temp_hashlen = gcry_mpi_get_nbits (sk_rover->pk->pkey[1]);
 
-                  if (sk_rover->pk->pubkey_algo == PUBKEY_ALGO_ECDSA)
+                  if (sk_rover->pk->pubkey_algo == PUBKEY_ALGO_ECDSA
+                      || sk_rover->pk->pubkey_algo == PUBKEY_ALGO_GOST12_256
+                      || sk_rover->pk->pubkey_algo == PUBKEY_ALGO_GOST12_512
+                      || sk_rover->pk->pubkey_algo == PUBKEY_ALGO_GOST2001)
                     {
                       temp_hashlen = ecdsa_qbits_from_Q (temp_hashlen);
                       if (!temp_hashlen)
@@ -1220,7 +1235,10 @@ sign_file (ctrl_t ctrl, strlist_t filenames, int detached, strlist_t locusr,
 		   * preferences.  */
                   if (hint.digest_length < temp_hashlen)
                     {
-                      if (sk_rover->pk->pubkey_algo == PUBKEY_ALGO_ECDSA)
+                      if (sk_rover->pk->pubkey_algo == PUBKEY_ALGO_ECDSA
+                          || sk_rover->pk->pubkey_algo == PUBKEY_ALGO_GOST12_256
+                          || sk_rover->pk->pubkey_algo == PUBKEY_ALGO_GOST12_512
+                          || sk_rover->pk->pubkey_algo == PUBKEY_ALGO_GOST2001)
                         {
                           if (hint.exact)
                             conflict = 1;
@@ -1839,7 +1857,10 @@ make_keysig_packet (ctrl_t ctrl,
   else if (pksk->pubkey_algo == PUBKEY_ALGO_DSA) /* Meet DSA requirements.  */
     digest_algo = match_dsa_hash (pksk,
                                  gcry_mpi_get_nbits (pksk->pkey[1])/8);
-  else if (pksk->pubkey_algo == PUBKEY_ALGO_ECDSA) /* Meet ECDSA requirements. */
+  else if (pksk->pubkey_algo == PUBKEY_ALGO_ECDSA
+           || pksk->pubkey_algo == PUBKEY_ALGO_GOST12_256
+           || pksk->pubkey_algo == PUBKEY_ALGO_GOST12_512
+           || pksk->pubkey_algo == PUBKEY_ALGO_GOST2001) /* Meet ECC/GOST requirements. */
     digest_algo = match_dsa_hash
       (pksk,
        ecdsa_qbits_from_Q (gcry_mpi_get_nbits (pksk->pkey[1]))/8);
@@ -1955,6 +1976,9 @@ update_keysig_packet (ctrl_t ctrl,
     digest_algo = opt.cert_digest_algo;
   else if (pksk->pubkey_algo == PUBKEY_ALGO_DSA
            || pksk->pubkey_algo == PUBKEY_ALGO_ECDSA
+           || pksk->pubkey_algo == PUBKEY_ALGO_GOST12_256
+           || pksk->pubkey_algo == PUBKEY_ALGO_GOST12_512
+           || pksk->pubkey_algo == PUBKEY_ALGO_GOST2001
            || pksk->pubkey_algo == PUBKEY_ALGO_EDDSA)
     digest_algo = orig_sig->digest_algo;
   else if (orig_sig->digest_algo == DIGEST_ALGO_SHA1
