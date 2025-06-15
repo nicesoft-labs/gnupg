@@ -1364,9 +1364,9 @@ check_prefs (ctrl_t ctrl, kbnode_t keyblock)
 		      problem=1;
 		    }
 		}
-                      const char *algo =
-                        (openpgp_md_test_algo (prefs->value)
-                         : openpgp_md_algo_name (prefs->value));
+	      else if(prefs->type==PREFTYPE_AEAD)
+		{
+		  if (openpgp_aead_test_algo (prefs->value))
 		    {
                       /* FIXME: The test below is wrong.  We should
                        * check if ...algo_name yields a "?" and
@@ -1387,9 +1387,9 @@ check_prefs (ctrl_t ctrl, kbnode_t keyblock)
 		  if(openpgp_md_test_algo(prefs->value))
 		    {
 		      const char *algo =
-                        (gcry_md_test_algo (prefs->value)
+                        (openpgp_md_test_algo (prefs->value)
                          ? num
-                         : gcry_md_algo_name (prefs->value));
+                         : openpgp_md_algo_name (prefs->value));
 		      if(!problem)
 			check_prefs_warning(pk);
 		      log_info(_("         \"%s\": preference for digest"
