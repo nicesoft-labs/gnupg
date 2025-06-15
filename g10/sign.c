@@ -449,8 +449,8 @@ do_sign (ctrl_t ctrl, PKT_public_key *pksk, PKT_signature *sig,
       && ! gnupg_digest_is_allowed (opt.compliance, 1, mdalgo))
     {
       log_error (_("digest algorithm '%s' may not be used in %s mode\n"),
-		 gcry_md_algo_name (mdalgo),
-		 gnupg_compliance_option_string (opt.compliance));
+                 openpgp_md_algo_name (mdalgo),
+                 gnupg_compliance_option_string (opt.compliance));
       err = gpg_error (GPG_ERR_DIGEST_ALGO);
       goto leave;
     }
@@ -608,8 +608,10 @@ openpgp_card_v1_p (PKT_public_key *pk)
 
 /* Get a matching hash algorithm for DSA and ECDSA.  */
 static int
-match_dsa_hash (unsigned int qbytes)
+match_dsa_hash (PKT_public_key *pk, unsigned int qbytes)
 {
+  if (openpgp_oid_is_gost (pk->pkey[0]))
+    return map_key_oid_to_md_openpgp (pk->pkey[0]);
   if (qbytes <= 20)
     return DIGEST_ALGO_SHA1;
 
@@ -707,7 +709,12 @@ hash_for (PKT_public_key *pk)
 	    }
 	}
 
-      return match_dsa_hash(qbytes);
+      return match_dsa_hash (pk, qbytes);
+    }
+  else if (pk->pubkey_algo == PUBKEY_ALGO_ECDH &&
+           openpgp_oid_is_gost (pk->pkey[0]))
+    {
+      return map_key_oid_to_md_openpgp (pk->pkey[0]);
     }
   else if (openpgp_card_v1_p (pk))
     {
@@ -1155,7 +1162,7 @@ sign_file (ctrl_t ctrl, strlist_t filenames, int detached, strlist_t locusr,
             {
               log_info (_("WARNING: forcing digest algorithm %s (%d)"
                           " violates recipient preferences\n"),
-                        gcry_md_algo_name (opt.def_digest_algo),
+                        gcry_md_algo_name (map_md_openpgp_to_gcry (opt.def_digest_algo)),
                         opt.def_digest_algo);
             }
         }
@@ -1232,7 +1239,7 @@ sign_file (ctrl_t ctrl, strlist_t filenames, int detached, strlist_t locusr,
     }
 
   for (sk_rover = sk_list; sk_rover; sk_rover = sk_rover->next)
-    gcry_md_enable (md, hash_for (sk_rover->pk));
+    gcry_md_enable (md, map_md_openpgp_to_gcry (hash_for (sk_rover->pk)));
 
   if (!multifile)
     {
@@ -1505,7 +1512,7 @@ clearsign_file (ctrl_t ctrl,
 
         if (!hashs_seen[ i & 0xff ])
           {
-            s = gcry_md_algo_name (i);
+            s = gcry_md_algo_name (map_md_openpgp_to_gcry (i));
             if (s)
               {
                 hashs_seen[ i & 0xff ] = 1;
@@ -1529,7 +1536,7 @@ clearsign_file (ctrl_t ctrl,
   if (gcry_md_open (&textmd, 0, 0))
     BUG ();
   for (sk_rover = sk_list; sk_rover; sk_rover = sk_rover->next)
-    gcry_md_enable (textmd, hash_for(sk_rover->pk));
+    gcry_md_enable (textmd, map_md_openpgp_to_gcry (hash_for (sk_rover->pk)));
 
   if (DBG_HASHING)
     gcry_md_debug (textmd, "clearsign");
@@ -1678,7 +1685,7 @@ sign_symencrypt_file (ctrl_t ctrl, const char *fname, strlist_t locusr)
     gcry_md_debug (md, "symc-sign");
 
   for (sk_rover = sk_list; sk_rover; sk_rover = sk_rover->next)
-    gcry_md_enable (md, hash_for (sk_rover->pk));
+    gcry_md_enable (md, map_md_openpgp_to_gcry (hash_for (sk_rover->pk)));
 
   if ((opt.compat_flags & COMPAT_PARALLELIZED))
     {
@@ -1827,10 +1834,12 @@ make_keysig_packet (ctrl_t ctrl,
   if (opt.cert_digest_algo)     /* Forceful override by the user.  */
     digest_algo = opt.cert_digest_algo;
   else if (pksk->pubkey_algo == PUBKEY_ALGO_DSA) /* Meet DSA requirements.  */
-    digest_algo = match_dsa_hash (gcry_mpi_get_nbits (pksk->pkey[1])/8);
+    digest_algo = match_dsa_hash (pksk,
+                                 gcry_mpi_get_nbits (pksk->pkey[1])/8);
   else if (pksk->pubkey_algo == PUBKEY_ALGO_ECDSA) /* Meet ECDSA requirements. */
     digest_algo = match_dsa_hash
-      (ecdsa_qbits_from_Q (gcry_mpi_get_nbits (pksk->pkey[1]))/8);
+      (pksk,
+       ecdsa_qbits_from_Q (gcry_mpi_get_nbits (pksk->pkey[1]))/8);
   else if (pksk->pubkey_algo == PUBKEY_ALGO_EDDSA)
     {
       if (gcry_mpi_get_nbits (pksk->pkey[1]) > 256)
@@ -1847,7 +1856,7 @@ make_keysig_packet (ctrl_t ctrl,
   if (pk_keyid[0] == pksk_keyid[0] && pk_keyid[1] == pksk_keyid[1])
     signhints |= SIGNHINT_SELFSIG;
 
-  if (gcry_md_open (&md, digest_algo, 0))
+  if (gcry_md_open (&md, map_md_openpgp_to_gcry (digest_algo), 0))
     BUG ();
 
   /* Hash the public key certificate. */
@@ -1957,7 +1966,7 @@ update_keysig_packet (ctrl_t ctrl,
   if (pk_keyid[0] == pksk_keyid[0] && pk_keyid[1] == pksk_keyid[1])
     signhints |= SIGNHINT_SELFSIG;
 
-  if (gcry_md_open (&md, digest_algo, 0))
+  if (gcry_md_open (&md, map_md_openpgp_to_gcry (digest_algo), 0))
     BUG ();
 
   /* Hash the public key certificate and the user id. */

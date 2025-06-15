@@ -171,7 +171,7 @@ check_signature (ctrl_t ctrl,
     {
       /* Compliance failure.  */
       log_info (_("digest algorithm '%s' may not be used in %s mode\n"),
-                gcry_md_algo_name (sig->digest_algo),
+                openpgp_md_algo_name (sig->digest_algo),
                 gnupg_compliance_option_string (opt.compliance));
       rc = gpg_error (GPG_ERR_DIGEST_ALGO);
     }
@@ -793,7 +793,7 @@ check_revocation_keys (ctrl_t ctrl, PKT_public_key *pk, PKT_signature *sig)
 	    {
               gcry_md_hd_t md;
 
-              if (gcry_md_open (&md, sig->digest_algo, 0))
+              if (gcry_md_open (&md, map_md_openpgp_to_gcry (sig->digest_algo), 0))
                 BUG ();
               hash_public_key(md,pk);
 	      /* Note: check_signature only checks that the signature
@@ -836,7 +836,7 @@ check_backsig (PKT_public_key *main_pk,PKT_public_key *sub_pk,
   if(!opt.no_sig_cache && backsig->flags.checked)
     return backsig->flags.valid? 0 : gpg_error (GPG_ERR_BAD_SIGNATURE);
 
-  rc = gcry_md_open (&md, backsig->digest_algo,0);
+  rc = gcry_md_open (&md, map_md_openpgp_to_gcry (backsig->digest_algo), 0);
   if (!rc)
     {
       hash_public_key(md,main_pk);
@@ -1019,7 +1019,7 @@ check_signature_over_key_or_uid (ctrl_t ctrl, PKT_public_key *signer,
 
   /* We checked above that we supported this algo, so an error here is
    * a bug.  */
-  if (gcry_md_open (&md, sig->digest_algo, 0))
+  if (gcry_md_open (&md, map_md_openpgp_to_gcry (sig->digest_algo), 0))
     BUG ();
 
   /* Hash the relevant data.  */

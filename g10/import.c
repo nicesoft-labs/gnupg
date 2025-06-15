@@ -1364,9 +1364,9 @@ check_prefs (ctrl_t ctrl, kbnode_t keyblock)
 		      problem=1;
 		    }
 		}
-	      else if(prefs->type==PREFTYPE_AEAD)
-		{
-		  if (openpgp_aead_test_algo (prefs->value))
+                      const char *algo =
+                        (openpgp_md_test_algo (prefs->value)
+                         : openpgp_md_algo_name (prefs->value));
 		    {
                       /* FIXME: The test below is wrong.  We should
                        * check if ...algo_name yields a "?" and
