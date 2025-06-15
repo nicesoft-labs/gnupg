@@ -497,11 +497,11 @@ map_key_oid_to_md_openpgp (gcry_mpi_t a)
 
 /* Map a curve OID to the corresponding OpenPGP public key algorithm.
  * Returns 0 if the OID does not identify a GOST algorithm.  */
-pubkey_algo_t
+int
 map_key_oid_to_pk_openpgp (gcry_mpi_t a)
 {
   char *oidstr = openpgp_oid_to_str (a);
-  pubkey_algo_t result = 0;
+  int result = 0;
 
   if (oidstr &&
       (0 == strncmp (oidstr, "1.2.643.2.2.35.", 15) ||

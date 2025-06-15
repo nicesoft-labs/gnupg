@@ -2789,12 +2789,14 @@ parse_key (IOBUF inp, int pkttype, unsigned long pktlen,
 
   if (!err && algorithm == PUBKEY_ALGO_ECDH)
     {
-      pubkey_algo_t galgo = map_key_oid_to_pk_openpgp (pk->pkey[0]);
-      if (galgo)
-        {
-          algorithm = galgo;
-          pk->pubkey_algo = galgo;
-        }
+      {
+        int galgo = map_key_oid_to_pk_openpgp (pk->pkey[0]);
+        if (galgo)
+          {
+            algorithm = galgo;
+            pk->pubkey_algo = galgo;
+          }
+      }
     }
   if (list_mode)
     keyid_from_pk (pk, keyid);
