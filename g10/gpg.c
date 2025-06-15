@@ -383,6 +383,7 @@ enum cmd_and_opt_values
     oNoUseAgent,
     oGpgAgentInfo,
     oUseKeyboxd,
+    oNoKeyboxd,
     oMergeOnly,
     oTryAllSecrets,
     oTrustedKey,
@@ -948,6 +949,7 @@ static gpgrt_opt_t opts[] = {
   ARGPARSE_s_s (oChUid,      "chuid",      "@"),
   ARGPARSE_s_n (oNoAutostart, "no-autostart", "@"),
   ARGPARSE_s_n (oUseKeyboxd,    "use-keyboxd", "@"),
+  ARGPARSE_s_n (oNoKeyboxd,     "no-keyboxd", "@"),
   ARGPARSE_s_n (oForbidGenKey,  "forbid-gen-key", "@"),
   ARGPARSE_s_n (oRequireCompliance, "require-compliance", "@"),
   ARGPARSE_s_s (oCompatibilityFlags, "compatibility-flags", "@"),
@@ -2864,6 +2866,10 @@ main (int argc, char **argv)
 
           case oUseKeyboxd:
             opt.use_keyboxd = 1;
+            break;
+
+          case oNoKeyboxd:
+            opt.use_keyboxd = 0;
             break;
 
           case oReaderPort:

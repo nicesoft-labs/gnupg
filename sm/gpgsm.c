@@ -213,6 +213,7 @@ enum cmd_and_opt_values {
   oAttribute,
   oChUid,
   oUseKeyboxd,
+  oNoKeyboxd,
   oKeyboxdProgram,
   oRequireCompliance,
   oCompatibilityFlags,
@@ -371,6 +372,7 @@ static gpgrt_opt_t opts[] = {
   ARGPARSE_s_s (oKeyServer_deprecated, "ldapserver", "@"),
   ARGPARSE_s_s (oKeyServer, "keyserver", "@"),
   ARGPARSE_s_n (oUseKeyboxd,    "use-keyboxd", "@"),
+  ARGPARSE_s_n (oNoKeyboxd,     "no-keyboxd", "@"),
 
 
   ARGPARSE_header ("ImportExport",
@@ -1294,6 +1296,7 @@ main ( int argc, char **argv)
 
         case oKeyring: append_to_strlist (&nrings, pargs.r.ret_str); break;
         case oUseKeyboxd: opt.use_keyboxd = 1; break;
+        case oNoKeyboxd: opt.use_keyboxd = 0; break;
 
         case oDebug:
           if (parse_debug_flag (pargs.r.ret_str, &debug_value, debug_flags))
