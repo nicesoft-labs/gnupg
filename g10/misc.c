@@ -923,6 +923,33 @@ map_md_openpgp_to_gcry (digest_algo_t algo)
     }
 }
 
+/* Map a Libgcrypt digest algorithm to the corresponding OpenPGP
+   identifier.  Returns 0 for unknown algorithms.  */
+digest_algo_t
+map_md_gcry_to_openpgp (enum gcry_md_algos algo)
+{
+  switch (algo)
+    {
+    case GCRY_MD_MD5:       return DIGEST_ALGO_MD5;
+    case GCRY_MD_SHA1:      return DIGEST_ALGO_SHA1;
+    case GCRY_MD_RMD160:    return DIGEST_ALGO_RMD160;
+    case GCRY_MD_SHA256:    return DIGEST_ALGO_SHA256;
+    case GCRY_MD_SHA384:    return DIGEST_ALGO_SHA384;
+    case GCRY_MD_SHA512:    return DIGEST_ALGO_SHA512;
+    case GCRY_MD_SHA224:    return DIGEST_ALGO_SHA224;
+#ifdef GCRY_MD_GOSTR3411_CP
+    case GCRY_MD_GOSTR3411_CP: return DIGEST_ALGO_GOSTR3411_94;
+#endif
+#ifdef GCRY_MD_STRIBOG256
+    case GCRY_MD_STRIBOG256: return DIGEST_ALGO_GOSTR3411_12_256;
+#endif
+#ifdef GCRY_MD_STRIBOG512
+    case GCRY_MD_STRIBOG512: return DIGEST_ALGO_GOSTR3411_12_512;
+#endif
+    default: return 0;
+    }
+}
+
 
 /* Return 0 if ALGO is suitable and implemented OpenPGP hash
    algorithm.  */
