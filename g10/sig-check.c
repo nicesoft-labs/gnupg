@@ -538,7 +538,7 @@ check_signature_end_simple (PKT_public_key *pk, PKT_signature *sig,
 
   /* Make sure the digest algo is enabled (in case of a detached
    * signature).  */
-  gcry_md_enable (digest, sig->digest_algo);
+  gcry_md_enable (digest, map_md_openpgp_to_gcry (sig->digest_algo));
 
   /* Complete the digest. */
   if (sig->version >= 4)

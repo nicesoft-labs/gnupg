@@ -273,6 +273,7 @@ encode_md_value (PKT_public_key *pk, gcry_md_hd_t md, int hash_algo)
 {
   gcry_mpi_t frame;
   size_t mdlen;
+  const enum gcry_md_algos galgo = map_md_openpgp_to_gcry (hash_algo);
 
   log_assert (hash_algo);
   log_assert (pk);
@@ -281,8 +282,8 @@ encode_md_value (PKT_public_key *pk, gcry_md_hd_t md, int hash_algo)
     {
       /* EdDSA signs data of arbitrary length.  Thus no special
          treatment is required.  */
-      frame = gcry_mpi_set_opaque_copy (NULL, gcry_md_read (md, hash_algo),
-                                        8*gcry_md_get_algo_dlen (hash_algo));
+      frame = gcry_mpi_set_opaque_copy (NULL, gcry_md_read (md, galgo),
+                                        8*gcry_md_get_algo_dlen (galgo));
     }
   else if (pk->pubkey_algo == PUBKEY_ALGO_DSA
            || pk->pubkey_algo == PUBKEY_ALGO_ECDSA)
@@ -327,21 +328,21 @@ encode_md_value (PKT_public_key *pk, gcry_md_hd_t md, int hash_algo)
 
       /* Check if we're too short.  Too long is safe as we'll
 	 automatically left-truncate.  */
-      mdlen = gcry_md_get_algo_dlen (hash_algo);
+      mdlen = gcry_md_get_algo_dlen (galgo);
       if (mdlen < qbits/8)
 	{
 	  log_error (_("%s key %s requires a %zu bit or larger hash "
                        "(hash is %s)\n"),
                      openpgp_pk_algo_name (pk->pubkey_algo),
                      keystr_from_pk (pk), qbits,
-                     gcry_md_algo_name (map_md_openpgp_to_gcry (hash_algo)));
+                     gcry_md_algo_name (galgo));
 	  return NULL;
 	}
 
      /* Note that we do the truncation by passing QBITS/8 as length to
         mpi_scan.  */
       if (gcry_mpi_scan (&frame, GCRYMPI_FMT_USG,
-                         gcry_md_read (md, hash_algo), qbits/8, NULL))
+                         gcry_md_read (md, galgo), qbits/8, NULL))
         BUG();
     }
   else
@@ -350,16 +351,16 @@ encode_md_value (PKT_public_key *pk, gcry_md_hd_t md, int hash_algo)
       byte *asn;
       size_t asnlen;
 
-      rc = gcry_md_algo_info (hash_algo, GCRYCTL_GET_ASNOID, NULL, &asnlen);
+      rc = gcry_md_algo_info (galgo, GCRYCTL_GET_ASNOID, NULL, &asnlen);
       if (rc)
         log_fatal ("can't get OID of digest algorithm %d: %s\n",
                    hash_algo, gpg_strerror (rc));
       asn = xtrymalloc (asnlen);
       if (!asn)
         return NULL;
-      if ( gcry_md_algo_info (hash_algo, GCRYCTL_GET_ASNOID, asn, &asnlen) )
+      if ( gcry_md_algo_info (galgo, GCRYCTL_GET_ASNOID, asn, &asnlen) )
         BUG();
-      frame = do_encode_md (md, hash_algo, gcry_md_get_algo_dlen (hash_algo),
+      frame = do_encode_md (md, galgo, gcry_md_get_algo_dlen (galgo),
                             gcry_mpi_get_nbits (pk->pkey[0]), asn, asnlen);
       xfree (asn);
     }
