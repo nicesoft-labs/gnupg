@@ -711,8 +711,11 @@ hash_for (PKT_public_key *pk)
 
       return match_dsa_hash (pk, qbytes);
     }
-  else if (pk->pubkey_algo == PUBKEY_ALGO_ECDH &&
-           openpgp_oid_is_gost (pk->pkey[0]))
+  else if ((pk->pubkey_algo == PUBKEY_ALGO_ECDH &&
+            openpgp_oid_is_gost (pk->pkey[0])) ||
+           pk->pubkey_algo == PUBKEY_ALGO_GOST12_256 ||
+           pk->pubkey_algo == PUBKEY_ALGO_GOST12_512 ||
+           pk->pubkey_algo == PUBKEY_ALGO_GOST2001)
     {
       return map_key_oid_to_md_openpgp (pk->pkey[0]);
     }

@@ -3864,6 +3864,11 @@ ask_user_id (int mode, int full, KBNODE keyblock)
 	    }
 	    xfree(answer);
 	}
+  int curve_algo = 0;
+
+  if (curve && openpgp_is_curve_supported (curve, &curve_algo, NULL)
+      && curve_algo && (algo == PUBKEY_ALGO_ECDH || algo == PUBKEY_ALGO_ECDSA))
+    algo = curve_algo;
 	xfree(answer);
 	if (!amail && !acomment)
 	    break;
