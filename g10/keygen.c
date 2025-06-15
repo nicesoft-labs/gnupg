@@ -3864,11 +3864,6 @@ ask_user_id (int mode, int full, KBNODE keyblock)
 	    }
 	    xfree(answer);
 	}
-  int curve_algo = 0;
-
-  if (curve && openpgp_is_curve_supported (curve, &curve_algo, NULL)
-      && curve_algo && (algo == PUBKEY_ALGO_ECDH || algo == PUBKEY_ALGO_ECDSA))
-    algo = curve_algo;
 	xfree(answer);
 	if (!amail && !acomment)
 	    break;
@@ -3895,6 +3890,11 @@ do_create (int algo, unsigned int nbits, const char *curve, kbnode_t pub_root,
            common_gen_cb_parm_t common_gen_cb_parm)
 {
   gpg_error_t err;
+  int curve_algo = 0;
+
+  if (curve && openpgp_is_curve_supported (curve, &curve_algo, NULL)
+      && curve_algo && (algo == PUBKEY_ALGO_ECDH || algo == PUBKEY_ALGO_ECDSA))
+    algo = curve_algo;
 
   /* Fixme: The entropy collecting message should be moved to a
      libgcrypt progress handler.  */
