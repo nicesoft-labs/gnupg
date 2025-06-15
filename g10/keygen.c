@@ -1517,12 +1517,12 @@ ecckey_from_sexp (gcry_mpi_t *array, gcry_sexp_t sexp,
 
   array[0] = NULL;
   array[1] = NULL;
-  array[2] = NULL;
-
-  list = gcry_sexp_find_token (sexp, "public-key", 0);
-  if (!list)
-    return gpg_error (GPG_ERR_INV_OBJ);
-  l2 = gcry_sexp_cadr (list);
+    oidstr = curve; /* Assume CURVE is given as an OID.  */
+  if (err && oidstr != curve)
+    {
+      /* Second try: CURVE may already be an OID.  */
+      err = openpgp_oid_from_str (curve, &array[0]);
+    }
   gcry_sexp_release (list);
   list = l2;
   if (!list)
